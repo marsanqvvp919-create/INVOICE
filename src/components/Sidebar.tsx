@@ -61,22 +61,22 @@ export default function Sidebar({
   return (
     <aside className="w-64 bg-slate-950 text-slate-300 flex flex-col h-screen border-r border-slate-800/80 fixed left-0 top-0 z-30 shadow-2xl selection:bg-blue-500 selection:text-white">
       {/* Brand Header */}
-      <div className="p-5 border-b border-slate-800/80 flex items-center justify-between bg-slate-900/60 backdrop-blur-md">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 via-indigo-600 to-blue-700 rounded-xl flex items-center justify-center font-black text-white text-xl shadow-lg shadow-blue-500/30 shrink-0 ring-1 ring-white/20">
+      <div className="px-3.5 py-4 border-b border-slate-800/80 flex items-center justify-between bg-slate-900/60 backdrop-blur-md">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-9 h-9 bg-gradient-to-br from-blue-500 via-indigo-600 to-blue-700 rounded-xl flex items-center justify-center font-black text-white text-lg shadow-lg shadow-blue-500/30 shrink-0 ring-1 ring-white/20">
             M
           </div>
-          <div className="leading-tight">
-            <h1 className="text-white font-extrabold text-sm tracking-tight flex items-center gap-1">
+          <div className="leading-tight min-w-0">
+            <h1 className="text-white font-extrabold text-sm tracking-tight flex items-center gap-1.5 whitespace-nowrap">
               <span>メディフロー</span>
-              <span className="text-[10px] font-mono text-blue-400 font-bold bg-blue-500/10 border border-blue-500/20 px-1 py-0.2 rounded">PRO</span>
+              <span className="text-[10px] font-mono text-blue-400 font-bold bg-blue-500/10 border border-blue-500/20 px-1 py-0.2 rounded shrink-0">PRO</span>
             </h1>
-            <p className="text-slate-400 text-[10px] font-semibold tracking-wider mt-0.5">発送・在庫統合管理OS</p>
+            <p className="text-slate-400 text-[9.5px] font-semibold tracking-wider mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis">発送・在庫統合管理OS</p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+        <div className="flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded-full shrink-0">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-[9px] font-bold text-emerald-400">ONLINE</span>
+          <span className="text-[8.5px] font-bold text-emerald-400 tracking-tight">ONLINE</span>
         </div>
       </div>
 

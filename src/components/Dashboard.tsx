@@ -138,7 +138,7 @@ export default function Dashboard({
   
   // Current month stats
   const currentMonthStr = new Date().toISOString().substring(0, 7); // YYYY-MM
-  const thisMonthShipments = shipments.filter(s => (s.date || '').startsWith(currentMonthStr));
+  const thisMonthShipments = shipments.filter(s => (s.date || '').startsWith(currentMonthStr) && s.status !== 'CANCELLED');
   const thisMonthConfirmed = thisMonthShipments.filter(s => s.status === 'CONFIRMED' || s.status === 'SHIPPED');
   
   const monthlyShipmentCount = thisMonthShipments.length;
@@ -152,9 +152,9 @@ export default function Dashboard({
     .sort((a, b) => (b.createdAt || b.date || '').localeCompare(a.createdAt || a.date || ''))
     .slice(0, 6);
 
-  // Clinic shipment distribution
+  // Clinic shipment distribution (Excluding CANCELLED)
   const clinicShipmentMap: Record<string, number> = {};
-  shipments.forEach(s => {
+  shipments.filter(s => s.status !== 'CANCELLED').forEach(s => {
     const name = s.clinicSnapshot?.name || '不明なクリニック';
     clinicShipmentMap[name] = (clinicShipmentMap[name] || 0) + 1;
   });
