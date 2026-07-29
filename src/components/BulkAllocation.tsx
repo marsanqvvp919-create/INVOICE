@@ -941,13 +941,13 @@ export default function BulkAllocation({
                 <SearchableSelect
                   options={[...activeProducts]
                     .sort((a, b) => {
-                      const nameA = a.nameJa || a.sku || '';
-                      const nameB = b.nameJa || b.sku || '';
-                      return nameA.localeCompare(nameB, 'en', { sensitivity: 'base' });
+                      const nameA = a.nameEn || a.nameJa || a.sku || '';
+                      const nameB = b.nameEn || b.nameJa || b.sku || '';
+                      return nameA.localeCompare(nameB, 'en', { sensitivity: 'base', numeric: true });
                     })
                     .map(p => ({
                       value: p.id,
-                      label: p.nameJa || p.sku || '名称未設定',
+                      label: `${p.nameEn || p.nameJa} (${p.nameJa || p.nameEn})`,
                       subLabel: `SKU: ${p.sku}`,
                       badge: p.spec || p.unit
                     }))
@@ -1084,13 +1084,13 @@ export default function BulkAllocation({
                           <SearchableSelect
                             options={[...activeProducts]
                               .sort((a, b) => {
-                                const nameA = a.nameJa || a.sku || '';
-                                const nameB = b.nameJa || b.sku || '';
-                                return nameA.localeCompare(nameB, 'en', { sensitivity: 'base' });
+                                const nameA = a.nameEn || a.nameJa || a.sku || '';
+                                const nameB = b.nameEn || b.nameJa || b.sku || '';
+                                return nameA.localeCompare(nameB, 'en', { sensitivity: 'base', numeric: true });
                               })
                               .map(p => ({
                                 value: p.id,
-                                label: p.nameJa || p.sku || '名称未設定',
+                                label: `${p.nameEn || p.nameJa} (${p.nameJa || p.nameEn})`,
                                 subLabel: `SKU: ${p.sku}`,
                                 badge: p.spec || p.unit
                               }))

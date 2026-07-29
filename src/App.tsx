@@ -1701,41 +1701,53 @@ export default function App() {
         {/* Sticky Header */}
         <header className="h-16 bg-white/90 backdrop-blur-md border-b border-slate-200/80 sticky top-0 z-20 flex items-center justify-between px-6 md:px-8 shrink-0 shadow-xs">
           <div className="flex items-center gap-3">
-            <h2 className="text-base md:text-lg font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+            <h2 className="text-base md:text-lg font-black text-slate-900 tracking-tight flex items-center gap-2">
               <span>{
-                activeTab === 'dashboard' ? 'ダッシュボード' :
-                activeTab === 'bulk-allocation' ? '複数クリニック一括発送' :
-                activeTab === 'shipments' ? '発送履歴・帳票管理' :
+                activeTab === 'dashboard' ? 'ダッシュボード概要' :
+                activeTab === 'bulk-allocation' ? '複数クリニック一括発送配分' :
+                activeTab === 'shipments' ? '発送履歴・帳票PDF管理' :
                 activeTab === 'stock-input' ? '在庫入庫登録・履歴' :
-                activeTab === 'stock-management' ? '拠点在庫一元管理' :
+                activeTab === 'stock-management' ? '拠点別在庫一元管理' :
                 activeTab === 'clinics' ? 'クリニックマスタ' :
                 activeTab === 'products' ? '製剤マスタ' :
                 activeTab === 'warehouses' ? '発送元倉庫マスタ' :
-                activeTab === 'suppliers' ? '入荷元マスタ' :
-                activeTab === 'audit-logs' ? '監査ログ' :
-                activeTab === 'settings' ? 'システム設定' : '薬製発送インボイス'
+                activeTab === 'suppliers' ? '入荷元サプライヤマスタ' :
+                activeTab === 'audit-logs' ? '操作監査ログ' :
+                activeTab === 'settings' ? 'システム基本設定' : 'メディフロー PRO'
               }</span>
             </h2>
-            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200 hidden sm:inline-block">
+            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200/60 hidden md:inline-block">
               {activeTab.toUpperCase()}
             </span>
           </div>
 
           <div className="flex items-center gap-4">
+            {/* Active Warehouse Indicator Badge */}
+            {warehouses.length > 0 && (
+              <div className="hidden lg:flex items-center gap-2 bg-slate-50 border border-slate-200/80 rounded-lg px-2.5 py-1 text-xs">
+                <span className="w-2 h-2 rounded-full bg-blue-600"></span>
+                <span className="text-slate-500 font-semibold text-[11px]">規定倉庫:</span>
+                <span className="font-bold text-slate-900">
+                  {warehouses.find(w => w.id === settings.defaultWarehouseId)?.name || warehouses.find(w => w.isDefault)?.name || warehouses[0]?.name}
+                </span>
+              </div>
+            )}
+
             <div className="text-right hidden sm:block">
-              <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider leading-none">本日</p>
-              <p className="text-xs font-bold text-slate-700 mt-0.5 font-mono">
+              <p className="text-[9px] text-slate-400 font-extrabold uppercase tracking-widest leading-none">本日</p>
+              <p className="text-xs font-extrabold text-slate-700 mt-0.5 font-mono">
                 {new Date().toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' })}
               </p>
             </div>
-            {activeTab === 'dashboard' && (
+
+            {activeTab !== 'bulk-allocation' && (
               <button 
                 type="button"
                 onClick={() => setActiveTab('bulk-allocation')}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs transition-all shadow-sm hover:shadow-md cursor-pointer flex items-center gap-1.5"
+                className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl font-bold text-xs transition-all duration-150 shadow-md shadow-blue-500/20 hover:shadow-lg cursor-pointer flex items-center gap-1.5"
               >
-                <span className="text-base leading-none">+</span>
-                <span>新規発送作成</span>
+                <span className="text-base font-black leading-none">+</span>
+                <span>新規発送配分</span>
               </button>
             )}
           </div>
@@ -1766,7 +1778,10 @@ export default function App() {
               products={products} 
               clinics={clinics} 
               shipments={shipments} 
+              settings={settings}
               setActiveTab={setActiveTab}
+              onUpdateShipmentStatus={handleUpdateShipmentStatus}
+              onDeleteShipment={handleDeleteShipment}
             />
           )}
 

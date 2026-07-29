@@ -13,7 +13,11 @@ import {
   X,
   RefreshCw,
   Printer,
-  ChevronUp
+  ChevronUp,
+  FileSpreadsheet,
+  CheckSquare,
+  Square,
+  Calendar
 } from 'lucide-react';
 import { Shipment, Product, Warehouse, Clinic, SystemSettings } from '../types';
 import { generateInvoicePDF, generatePackingListPDF, loadJapaneseFont } from '../lib/pdf';
@@ -51,6 +55,8 @@ export default function ShipmentHistory({
   const [searchCourier, setSearchCourier] = useState('');
   const [searchTrackingNo, setSearchTrackingNo] = useState('');
   const [searchOperator, setSearchOperator] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Detail Modal state
@@ -107,6 +113,28 @@ export default function ShipmentHistory({
   const [editShippingCost, setEditShippingCost] = useState(0);
   const [editNotes, setEditNotes] = useState('');
 
+  // Date Quick Set Helpers
+  const handleSetThisMonth = () => {
+    const now = new Date();
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+    setStartDate(firstDay);
+    setEndDate(lastDay);
+  };
+
+  const handleSetLastMonth = () => {
+    const now = new Date();
+    const firstDay = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 10);
+    const lastDay = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().slice(0, 10);
+    setStartDate(firstDay);
+    setEndDate(lastDay);
+  };
+
+  const handleClearDates = () => {
+    setStartDate('');
+    setEndDate('');
+  };
+
   // Filtering
   const filteredShipments = shipments.filter(s => {
     const invMatch = s.invoiceNo.toLowerCase().includes(searchInvoiceNo.toLowerCase());
@@ -114,6 +142,10 @@ export default function ShipmentHistory({
                         (s.clinicSnapshot?.nameEn || '').toLowerCase().includes(searchClinic.toLowerCase());
     const statusMatch = searchStatus === 'ALL' || s.status === searchStatus;
     
+    // Date Range Matching
+    const dateFromMatch = !startDate || s.date >= startDate;
+    const dateToMatch = !endDate || s.date <= endDate;
+
     // Sub-items matching
     const itemMatch = searchProduct === '' && searchLot === ''
       ? true
@@ -126,8 +158,222 @@ export default function ShipmentHistory({
     const trackingMatch = s.trackingNo.toLowerCase().includes(searchTrackingNo.toLowerCase());
     const operatorMatch = s.createdByName.toLowerCase().includes(searchOperator.toLowerCase());
 
-    return invMatch && clinicMatch && statusMatch && itemMatch && courierMatch && trackingMatch && operatorMatch;
+    return invMatch && clinicMatch && statusMatch && itemMatch && courierMatch && trackingMatch && operatorMatch && dateFromMatch && dateToMatch;
   });
+
+  // Selection State
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // Selection Handlers
+  const handleToggleSelect = (id: string) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectConfirmedAndShipped = () => {
+    const targetIds = filteredShipments
+      .filter(s => s.status === 'CONFIRMED' || s.status === 'SHIPPED')
+      .map(s => s.id);
+    setSelectedIds(targetIds);
+  };
+
+  const handleSelectAllFiltered = () => {
+    const allIds = filteredShipments.map(s => s.id);
+    setSelectedIds(allIds);
+  };
+
+  const handleClearSelection = () => {
+    setSelectedIds([]);
+  };
+
+  const isAllFilteredSelected = filteredShipments.length > 0 && filteredShipments.every(s => selectedIds.includes(s.id));
+
+  const handleToggleSelectAll = () => {
+    if (isAllFilteredSelected) {
+      setSelectedIds(prev => prev.filter(id => !filteredShipments.some(fs => fs.id === id)));
+    } else {
+      const newIds = new Set([...selectedIds, ...filteredShipments.map(s => s.id)]);
+      setSelectedIds(Array.from(newIds));
+    }
+  };
+
+  // Export aggregated CSV (Grouped by Product)
+  const handleExportAggregatedCSV = () => {
+    const selectedShipments = shipments.filter(s => selectedIds.includes(s.id));
+    if (selectedShipments.length === 0) {
+      setNotification({
+        isOpen: true,
+        type: 'error',
+        title: '対象未選択',
+        message: 'CSV出力を行うインボイスデータを1件以上選択してください。'
+      });
+      return;
+    }
+
+    interface AggItem {
+      sku: string;
+      nameEn: string;
+      nameJa: string;
+      unit: string;
+      totalQty: number;
+      totalAmount: number;
+      invoiceNumbers: Set<string>;
+      lotsMap: Map<string, number>;
+    }
+
+    const aggMap = new Map<string, AggItem>();
+
+    selectedShipments.forEach(s => {
+      // 取消 (CANCELLED) 分は集計数量に一切反映しない
+      if (s.status === 'CANCELLED') return;
+
+      s.items.forEach(it => {
+        const key = it.productId || it.sku || it.nameEn;
+        if (!aggMap.has(key)) {
+          aggMap.set(key, {
+            sku: it.sku || '',
+            nameEn: it.nameEn || '',
+            nameJa: it.nameJa || '',
+            unit: it.unit || '個',
+            totalQty: 0,
+            totalAmount: 0,
+            invoiceNumbers: new Set(),
+            lotsMap: new Map()
+          });
+        }
+        const itemAgg = aggMap.get(key)!;
+        itemAgg.totalQty += (it.qty || 0);
+        itemAgg.totalAmount += (it.amount || 0);
+        if (s.invoiceNo) itemAgg.invoiceNumbers.add(s.invoiceNo);
+        if (it.lotNo) {
+          const prevQty = itemAgg.lotsMap.get(it.lotNo) || 0;
+          itemAgg.lotsMap.set(it.lotNo, prevQty + (it.qty || 0));
+        }
+      });
+    });
+
+    const escapeCSV = (val: any) => {
+      if (val === null || val === undefined) return '""';
+      return `"${String(val).replace(/"/g, '""')}"`;
+    };
+
+    const headers = [
+      'SKU(商品コード)',
+      '製剤名(英語)',
+      '製剤名(日本語)',
+      '単位',
+      '合計数量',
+      '合計金額',
+      '対象インボイス数',
+      '対象インボイス番号一覧',
+      'ロット別数量内訳'
+    ];
+
+    const rows: string[] = [headers.map(escapeCSV).join(',')];
+
+    Array.from(aggMap.values())
+      .sort((a, b) => (a.nameEn || a.sku).localeCompare(b.nameEn || b.sku, 'en', { numeric: true }))
+      .forEach(agg => {
+        const invList = Array.from(agg.invoiceNumbers).join('; ');
+        const lotsList = Array.from(agg.lotsMap.entries())
+          .map(([lot, qty]) => `${lot}: ${qty}個`)
+          .join('; ');
+
+        const row = [
+          agg.sku,
+          agg.nameEn,
+          agg.nameJa,
+          agg.unit,
+          agg.totalQty,
+          agg.totalAmount,
+          agg.invoiceNumbers.size,
+          invList,
+          lotsList
+        ].map(escapeCSV).join(',');
+
+        rows.push(row);
+      });
+
+    const csvContent = rows.join('\r\n');
+    const bom = '\uFEFF';
+    const blob = new Blob([bom + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const dateStr = new Date().toISOString().slice(0, 10);
+    link.setAttribute('download', `製剤数量集計_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Export Detailed CSV (Item & Lot Breakdown)
+  const handleExportDetailedCSV = () => {
+    const selectedShipments = shipments.filter(s => selectedIds.includes(s.id));
+    if (selectedShipments.length === 0) return;
+
+    const escapeCSV = (val: any) => {
+      if (val === null || val === undefined) return '""';
+      return `"${String(val).replace(/"/g, '""')}"`;
+    };
+
+    const headers = [
+      'インボイス番号',
+      '発送日',
+      'クリニック名',
+      'ステータス',
+      'SKU(商品コード)',
+      '製剤名(英語)',
+      '製剤名(日本語)',
+      'ロット番号',
+      '使用期限',
+      '数量',
+      '単位',
+      '単価',
+      '小計'
+    ];
+
+    const rows: string[] = [headers.map(escapeCSV).join(',')];
+
+    selectedShipments.forEach(s => {
+      // 取消 (CANCELLED) 分は出力数量明細に反映しない
+      if (s.status === 'CANCELLED') return;
+
+      s.items.forEach(it => {
+        const row = [
+          s.invoiceNo,
+          s.date,
+          s.clinicSnapshot?.nameEn || s.clinicSnapshot?.name || '',
+          s.status === 'CONFIRMED' ? '確定' : s.status === 'SHIPPED' ? '発送済' : s.status === 'DRAFT' ? '下書き' : s.status === 'WAITING' ? '確認待ち' : '取消',
+          it.sku,
+          it.nameEn,
+          it.nameJa,
+          it.lotNo,
+          it.expiryDate,
+          it.qty,
+          it.unit,
+          it.unitPrice,
+          it.amount
+        ].map(escapeCSV).join(',');
+        rows.push(row);
+      });
+    });
+
+    const csvContent = rows.join('\r\n');
+    const bom = '\uFEFF';
+    const blob = new Blob([bom + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const dateStr = new Date().toISOString().slice(0, 10);
+    link.setAttribute('download', `発送明細データ_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   const handleDownloadInvoice = async (s: Shipment) => {
     await loadJapaneseFont();
@@ -304,6 +550,57 @@ export default function ShipmentHistory({
 
       {/* Filter panel */}
       <div className="bg-white p-5 rounded-xl border border-slate-200/80 shadow-sm space-y-4">
+        {/* Date Range Section */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div className="flex flex-wrap items-center gap-2 text-xs w-full sm:w-auto">
+            <span className="font-bold text-slate-700 text-xs shrink-0 flex items-center gap-1">
+              <Calendar className="w-3.5 h-3.5 text-blue-600" />
+              <span>発送期間指定:</span>
+            </span>
+            <div className="flex items-center gap-1.5 w-full sm:w-auto">
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 focus:outline-none focus:border-blue-500 cursor-pointer"
+              />
+              <span className="text-slate-400">〜</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 focus:outline-none focus:border-blue-500 cursor-pointer"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={handleSetThisMonth}
+              className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded text-xs font-semibold cursor-pointer transition-colors"
+            >
+              今月
+            </button>
+            <button
+              type="button"
+              onClick={handleSetLastMonth}
+              className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded text-xs font-semibold cursor-pointer transition-colors"
+            >
+              先月
+            </button>
+            {(startDate || endDate) && (
+              <button
+                type="button"
+                onClick={handleClearDates}
+                className="text-slate-400 hover:text-slate-600 text-xs underline cursor-pointer px-1"
+              >
+                期間解除
+              </button>
+            )}
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
           <div>
             <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">インボイス番号</label>
@@ -404,12 +701,85 @@ export default function ShipmentHistory({
         )}
       </div>
 
+      {/* Selection & Batch CSV Export Panel */}
+      <div className="bg-slate-900 text-white p-4 rounded-xl shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-3 border border-slate-800">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-bold text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded border border-emerald-800/80 flex items-center gap-1.5">
+            <CheckSquare className="w-4 h-4 text-emerald-400" />
+            <span>選択中: {selectedIds.length} 件</span>
+          </span>
+
+          <button
+            type="button"
+            onClick={handleSelectConfirmedAndShipped}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1 rounded text-xs font-semibold cursor-pointer transition-colors"
+            title="表示中の「確定」および「発送済み」の全インボイスを選択"
+          >
+            「確定・発送済み」を一括選択
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSelectAllFiltered}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-2.5 py-1 rounded text-xs font-medium cursor-pointer"
+          >
+            表示中を全選択
+          </button>
+
+          {selectedIds.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClearSelection}
+              className="text-slate-400 hover:text-slate-200 text-xs underline cursor-pointer ml-1"
+            >
+              選択解除
+            </button>
+          )}
+
+          <span className="text-[11px] text-slate-400 font-normal ml-1">
+            ※ 取消(CANCELLED)データはCSV集計数量から自動除外されます
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+          <button
+            type="button"
+            disabled={selectedIds.length === 0}
+            onClick={handleExportAggregatedCSV}
+            className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold px-4 py-1.5 rounded text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>製剤別集計CSV出力</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={selectedIds.length === 0}
+            onClick={handleExportDetailedCSV}
+            className="w-full sm:w-auto bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 border border-slate-700 font-semibold px-3 py-1.5 rounded text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            title="選択インボイスの出荷品目・ロット別明細CSV"
+          >
+            <FileDown className="w-3.5 h-3.5" />
+            <span>品目明細CSV</span>
+          </button>
+        </div>
+      </div>
+
       {/* Shipments Table List */}
       <div className="bg-white rounded-xl border border-slate-200/80 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                <th className="px-3 py-3 w-10 text-center">
+                  <input
+                    type="checkbox"
+                    checked={isAllFilteredSelected}
+                    onChange={handleToggleSelectAll}
+                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    title="表示中のすべての発送を選択/解除"
+                  />
+                </th>
                 <th className="px-5 py-3">インボイス番号 / 発送日</th>
                 <th className="px-5 py-3">クリニック名</th>
                 <th className="px-5 py-3 text-right">品目数 / 総数量</th>
@@ -423,14 +793,24 @@ export default function ShipmentHistory({
             <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
               {filteredShipments.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400">
+                  <td colSpan={9} className="text-center py-12 text-slate-400">
                     条件に合致する発送データが見つかりません
                   </td>
                 </tr>
               ) : (
-                filteredShipments.map((s) => (
-                  <tr key={s.id} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="px-5 py-4">
+                filteredShipments.map((s) => {
+                  const isSelected = selectedIds.includes(s.id);
+                  return (
+                    <tr key={s.id} className={`hover:bg-slate-50/50 transition-colors ${isSelected ? 'bg-blue-50/30' : ''}`}>
+                      <td className="px-3 py-4 text-center">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => handleToggleSelect(s.id)}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                      </td>
+                      <td className="px-5 py-4">
                       <div className="font-bold font-mono text-blue-600">{s.invoiceNo}</div>
                       <div className="text-[10px] text-slate-400 font-mono mt-0.5">{s.date}</div>
                     </td>
@@ -578,8 +958,9 @@ export default function ShipmentHistory({
                       </div>
                     </td>
                   </tr>
-                ))
-              )}
+                );
+              })
+            )}
             </tbody>
           </table>
         </div>
