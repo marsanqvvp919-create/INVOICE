@@ -1,0 +1,6 @@
+{
+  "name": "インボイス・パッキングリスト自動作成システム",
+  "description": "海外倉庫から日本国内の複数クリニックへの製剤発送時における、商業インボイスおよびパッキングリストの自動作成・在庫管理システムです。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
