@@ -167,19 +167,19 @@ export default function Dashboard({
   return (
     <div className="space-y-6">
       {/* Metric Cards Banner */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5">
-        {/* Total Stock */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-5">
+        {/* This month's total quantity shipped */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:shadow-md transition-all duration-200 flex items-center justify-between group">
           <div className="space-y-1.5">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">海外倉庫 総在庫数</span>
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">今月の発送数量</span>
             <div className="flex items-baseline gap-1.5">
-              <span className="text-3xl font-black font-mono text-slate-900 group-hover:text-blue-600 transition-colors">{totalStock.toLocaleString()}</span>
+              <span className="text-3xl font-black font-mono text-slate-900 group-hover:text-emerald-600 transition-colors">{monthlyQuantity.toLocaleString()}</span>
               <span className="text-xs text-slate-500 font-bold">個</span>
             </div>
-            <p className="text-[10px] text-slate-400 font-medium">全{products.length}品目の合算</p>
+            <p className="text-[10px] text-slate-400 font-medium">確定済み発送の合計</p>
           </div>
-          <div className="w-12 h-12 bg-blue-50 border border-blue-100 rounded-2xl flex items-center justify-center text-blue-600 group-hover:scale-110 transition-transform">
-            <Package className="w-6 h-6" />
+          <div className="w-12 h-12 bg-emerald-50 border border-emerald-100 rounded-2xl flex items-center justify-center text-emerald-600 group-hover:scale-110 transition-transform">
+            <Truck className="w-6 h-6" />
           </div>
         </div>
 
@@ -195,21 +195,6 @@ export default function Dashboard({
           </div>
           <div className="w-12 h-12 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-center justify-center text-indigo-600 group-hover:scale-110 transition-transform">
             <TrendingUp className="w-6 h-6" />
-          </div>
-        </div>
-
-        {/* This month's total quantity shipped */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:shadow-md transition-all duration-200 flex items-center justify-between group">
-          <div className="space-y-1.5">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">今月の発送数量</span>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-3xl font-black font-mono text-slate-900 group-hover:text-emerald-600 transition-colors">{monthlyQuantity.toLocaleString()}</span>
-              <span className="text-xs text-slate-500 font-bold">個</span>
-            </div>
-            <p className="text-[10px] text-slate-400 font-medium">確定済み発送の合計</p>
-          </div>
-          <div className="w-12 h-12 bg-emerald-50 border border-emerald-100 rounded-2xl flex items-center justify-center text-emerald-600 group-hover:scale-110 transition-transform">
-            <Truck className="w-6 h-6" />
           </div>
         </div>
 
@@ -515,7 +500,7 @@ export default function Dashboard({
               <div className="flex justify-between items-center">
                 <span className="text-slate-500 font-medium">今月発送確定額</span>
                 <span className="font-bold font-mono text-blue-600">
-                  {thisMonthConfirmed.reduce((acc, s) => acc + s.totalInvoiceAmount, 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} USD相当
+                  ¥{Math.round(thisMonthConfirmed.reduce((acc, s) => acc + s.totalInvoiceAmount, 0)).toLocaleString()} 円
                 </span>
               </div>
             </div>

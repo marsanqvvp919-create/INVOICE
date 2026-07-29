@@ -52,10 +52,13 @@ export default function SearchableSelect({
       const spaceBelow = window.innerHeight - rect.bottom;
       const openUpward = spaceBelow < dropdownHeight && rect.top > dropdownHeight;
 
+      const calculatedWidth = Math.min(Math.max(rect.width, 240), window.innerWidth > 0 ? window.innerWidth - 16 : 240);
+      const calculatedLeft = Math.max(8, Math.min(rect.left, window.innerWidth - calculatedWidth - 8));
+
       setCoords({
         top: openUpward ? rect.top - 4 : rect.bottom + 4,
-        left: rect.left,
-        width: Math.max(rect.width, 260),
+        left: calculatedLeft,
+        width: calculatedWidth,
         openUpward
       });
     }

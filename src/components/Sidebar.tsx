@@ -15,17 +15,22 @@ import {
   ChevronRight,
   Database,
   Sparkles,
-  ArrowUpRight
+  ArrowUpRight,
+  X
 } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  isOpen?: boolean;
+  onClose?: () => void;
 }
 
 export default function Sidebar({ 
   activeTab, 
-  setActiveTab
+  setActiveTab,
+  isOpen = false,
+  onClose
 }: SidebarProps) {
   const masterTabIds = ['clinics', 'products', 'warehouses', 'suppliers'];
   const [isMasterOpen, setIsMasterOpen] = useState(() => masterTabIds.includes(activeTab));
@@ -35,6 +40,11 @@ export default function Sidebar({
       setIsMasterOpen(true);
     }
   }, [activeTab]);
+
+  const handleSelectTab = (tabId: string) => {
+    setActiveTab(tabId);
+    if (onClose) onClose();
+  };
   
   const mainMenuItems = [
     { id: 'dashboard', label: 'ダッシュボード', icon: LayoutDashboard },
@@ -59,26 +69,53 @@ export default function Sidebar({
   const isAnyMasterActive = masterTabIds.includes(activeTab);
 
   return (
-    <aside className="w-64 bg-slate-950 text-slate-300 flex flex-col h-screen border-r border-slate-800/80 fixed left-0 top-0 z-30 shadow-2xl selection:bg-blue-500 selection:text-white">
-      {/* Brand Header */}
-      <div className="px-3.5 py-4 border-b border-slate-800/80 flex items-center justify-between bg-slate-900/60 backdrop-blur-md">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-9 h-9 bg-gradient-to-br from-blue-500 via-indigo-600 to-blue-700 rounded-xl flex items-center justify-center font-black text-white text-lg shadow-lg shadow-blue-500/30 shrink-0 ring-1 ring-white/20">
-            M
+    <>
+      {/* Mobile Backdrop Overlay */}
+      {isOpen && (
+        <div 
+          className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-40 lg:hidden transition-opacity"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside 
+        className={`w-64 bg-slate-950 text-slate-300 flex flex-col h-screen border-r border-slate-800/80 fixed left-0 top-0 z-50 shadow-2xl transition-transform duration-300 lg:translate-x-0 ${
+          isOpen ? 'translate-x-0' : '-translate-x-full'
+        } selection:bg-blue-500 selection:text-white`}
+      >
+        {/* Brand Header */}
+        <div className="px-3.5 py-4 border-b border-slate-800/80 flex items-center justify-between bg-slate-900/60 backdrop-blur-md">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 bg-gradient-to-br from-blue-500 via-indigo-600 to-blue-700 rounded-xl flex items-center justify-center font-black text-white text-lg shadow-lg shadow-blue-500/30 shrink-0 ring-1 ring-white/20">
+              M
+            </div>
+            <div className="leading-tight min-w-0">
+              <h1 className="text-white font-extrabold text-sm tracking-tight flex items-center gap-1.5 whitespace-nowrap">
+                <span>メディフロー</span>
+                <span className="text-[10px] font-mono text-blue-400 font-bold bg-blue-500/10 border border-blue-500/20 px-1 py-0.2 rounded shrink-0">PRO</span>
+              </h1>
+              <p className="text-slate-400 text-[9.5px] font-semibold tracking-wider mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis">発送・在庫統合管理OS</p>
+            </div>
           </div>
-          <div className="leading-tight min-w-0">
-            <h1 className="text-white font-extrabold text-sm tracking-tight flex items-center gap-1.5 whitespace-nowrap">
-              <span>メディフロー</span>
-              <span className="text-[10px] font-mono text-blue-400 font-bold bg-blue-500/10 border border-blue-500/20 px-1 py-0.2 rounded shrink-0">PRO</span>
-            </h1>
-            <p className="text-slate-400 text-[9.5px] font-semibold tracking-wider mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis">発送・在庫統合管理OS</p>
+          
+          <div className="flex items-center gap-1.5">
+            <div className="hidden sm:flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded-full shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-[8.5px] font-bold text-emerald-400 tracking-tight">ONLINE</span>
+            </div>
+
+            {/* Close Button for Mobile Drawer */}
+            <button
+              type="button"
+              onClick={onClose}
+              className="lg:hidden text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors"
+              aria-label="メニューを閉じる"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
         </div>
-        <div className="flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded-full shrink-0">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-[8.5px] font-bold text-emerald-400 tracking-tight">ONLINE</span>
-        </div>
-      </div>
 
       {/* Navigation Links */}
       <div className="flex-1 overflow-y-auto px-3.5 py-5 space-y-6">
@@ -96,7 +133,7 @@ export default function Sidebar({
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveTab(item.id)}
+                  onClick={() => handleSelectTab(item.id)}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all duration-150 cursor-pointer group ${
                     isActive 
                       ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-600/30 font-bold ring-1 ring-white/10' 
@@ -156,7 +193,7 @@ export default function Sidebar({
                     <button
                       key={item.id}
                       type="button"
-                      onClick={() => setActiveTab(item.id)}
+                      onClick={() => handleSelectTab(item.id)}
                       className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition-all duration-150 cursor-pointer ${
                         isActive 
                           ? 'bg-blue-600/20 text-blue-300 font-bold border border-blue-500/30' 
@@ -187,7 +224,7 @@ export default function Sidebar({
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveTab(item.id)}
+                  onClick={() => handleSelectTab(item.id)}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all duration-150 cursor-pointer group ${
                     isActive 
                       ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-600/30 font-bold ring-1 ring-white/10' 
@@ -216,7 +253,8 @@ export default function Sidebar({
         </div>
       </div>
     </aside>
-  );
+  </>
+);
 }
 
 

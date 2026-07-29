@@ -25,6 +25,7 @@ import {
   UserRole,
   Supplier
 } from './types';
+import { Menu } from 'lucide-react';
 
 // Component Imports
 import Sidebar from './components/Sidebar';
@@ -63,6 +64,7 @@ const DEFAULT_SETTINGS: SettingsType = {
 export default function App() {
   // Navigation state
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
 
   // Firestore Realtime Collections States
@@ -1688,21 +1690,33 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50/70 flex font-sans text-slate-800 antialiased">
+    <div className="min-h-screen bg-slate-50/70 flex font-sans text-slate-800 antialiased overflow-x-hidden">
       {/* Sidebar navigation */}
       <Sidebar 
         activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
+        setActiveTab={setActiveTab}
+        isOpen={isMobileMenuOpen}
+        onClose={() => setIsMobileMenuOpen(false)}
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 min-h-screen flex flex-col ml-0 md:ml-64 transition-all duration-300">
+      <main className="flex-1 min-h-screen flex flex-col ml-0 lg:ml-64 transition-all duration-300 min-w-0 w-full overflow-x-hidden">
         
         {/* Sticky Header */}
-        <header className="h-16 bg-white/90 backdrop-blur-md border-b border-slate-200/80 sticky top-0 z-20 flex items-center justify-between px-6 md:px-8 shrink-0 shadow-xs">
-          <div className="flex items-center gap-3">
-            <h2 className="text-base md:text-lg font-black text-slate-900 tracking-tight flex items-center gap-2">
-              <span>{
+        <header className="h-16 bg-white/90 backdrop-blur-md border-b border-slate-200/80 sticky top-0 z-20 flex items-center justify-between px-3.5 sm:px-6 md:px-8 shrink-0 shadow-xs gap-2">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            {/* Mobile Hamburger Button */}
+            <button
+              type="button"
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="lg:hidden p-2 text-slate-700 hover:text-blue-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer shrink-0"
+              aria-label="メニューを開く"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+
+            <h2 className="text-sm sm:text-base md:text-lg font-black text-slate-900 tracking-tight flex items-center gap-2 truncate">
+              <span className="truncate">{
                 activeTab === 'dashboard' ? 'ダッシュボード概要' :
                 activeTab === 'bulk-allocation' ? '複数クリニック一括発送配分' :
                 activeTab === 'shipments' ? '発送履歴・帳票PDF管理' :
@@ -1716,12 +1730,12 @@ export default function App() {
                 activeTab === 'settings' ? 'システム基本設定' : 'メディフロー PRO'
               }</span>
             </h2>
-            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200/60 hidden md:inline-block">
+            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200/60 hidden xl:inline-block shrink-0">
               {activeTab.toUpperCase()}
             </span>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
             {/* Active Warehouse Indicator Badge */}
             {warehouses.length > 0 && (
               <div className="hidden lg:flex items-center gap-2 bg-slate-50 border border-slate-200/80 rounded-lg px-2.5 py-1 text-xs">
@@ -1744,17 +1758,18 @@ export default function App() {
               <button 
                 type="button"
                 onClick={() => setActiveTab('bulk-allocation')}
-                className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl font-bold text-xs transition-all duration-150 shadow-md shadow-blue-500/20 hover:shadow-lg cursor-pointer flex items-center gap-1.5"
+                className="px-3 sm:px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl font-bold text-xs transition-all duration-150 shadow-md shadow-blue-500/20 hover:shadow-lg cursor-pointer flex items-center gap-1 shrink-0"
               >
                 <span className="text-base font-black leading-none">+</span>
-                <span>新規発送配分</span>
+                <span className="hidden sm:inline">新規発送配分</span>
+                <span className="sm:hidden text-xs">配分</span>
               </button>
             )}
           </div>
         </header>
 
         {/* Content Container */}
-        <div className="p-5 md:p-8 flex-1 flex flex-col space-y-6 overflow-x-hidden">
+        <div className="p-3.5 sm:p-5 md:p-8 flex-1 flex flex-col space-y-6 overflow-x-hidden">
           {/* Quick Seed Warning Bar (Only displayed if products are empty) */}
           {products.length === 0 && (
             <div className="bg-gradient-to-r from-amber-500 to-amber-600 text-white p-4 rounded-2xl shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4 border border-amber-400">
