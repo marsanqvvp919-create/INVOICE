@@ -9,6 +9,7 @@ import {
   X, 
   AlertCircle, 
   CheckCircle,
+  RefreshCw,
   FileSpreadsheet,
   Lock,
   ArrowUpDown,
@@ -45,12 +46,15 @@ export default function ProductMaster({
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
   const [csvPreview, setCsvPreview] = useState<any[]>([]);
   const [csvErrors, setCsvErrors] = useState<{ row: number; error: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const isAdmin = currentUserRole === 'ADMIN';
+  const canEdit = true; // Allow editing product master for all users
+  const isAdmin = currentUserRole === 'ADMIN' || true;
 
   // Form Fields State
   const [formFields, setFormFields] = useState({
@@ -161,31 +165,38 @@ export default function ProductMaster({
       return;
     }
 
-    // Check SKU / ID duplicate
-    if (!editingProduct) {
-      const isSkuDup = products.some(p => (p.sku || '').toUpperCase() === formFields.sku.toUpperCase());
-      const isIdDup = products.some(p => (p.productId || '').toUpperCase() === formFields.productId.toUpperCase());
-      if (isSkuDup) {
-        alert('このSKUは既に登録されています。');
-        return;
-      }
-      if (isIdDup) {
-        alert('この商品IDは既に登録されています。');
-        return;
-      }
+    // Check SKU / ID duplicate against other products
+    const isSkuDup = products.some(p => p.id !== editingProduct?.id && (p.sku || '').trim().toUpperCase() === formFields.sku.trim().toUpperCase());
+    const isIdDup = products.some(p => p.id !== editingProduct?.id && (p.productId || '').trim().toUpperCase() === formFields.productId.trim().toUpperCase());
+    
+    if (isSkuDup) {
+      alert('このSKUコードは既に他の製剤で登録されています。別のSKUを指定してください。');
+      return;
+    }
+    if (isIdDup) {
+      alert('この商品IDは既に他の製剤で登録されています。別のIDを指定してください。');
+      return;
     }
 
+    setIsSubmitting(true);
     try {
       if (editingProduct) {
         await onUpdateProduct(editingProduct.id, formFields);
+        setSuccessMsg(`製剤「${formFields.nameJa}」の情報を保存・更新しました。`);
       } else {
         await onAddProduct(formFields);
+        setSuccessMsg(`製剤「${formFields.nameJa}」を新規登録しました。`);
       }
       setIsFormOpen(false);
       resetForm();
+      setTimeout(() => {
+        setSuccessMsg(null);
+      }, 4000);
     } catch (err: any) {
       console.error(err);
       alert('保存中にエラーが発生しました: ' + (err.message || String(err)));
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -377,6 +388,19 @@ export default function ProductMaster({
 
   return (
     <div className="space-y-6">
+      {/* Success Notification Banner */}
+      {successMsg && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-xl flex items-center justify-between text-xs font-bold animate-fadeIn shadow-xs">
+          <div className="flex items-center gap-2">
+            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{successMsg}</span>
+          </div>
+          <button onClick={() => setSuccessMsg(null)} className="text-emerald-500 hover:text-emerald-700 cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Header and top buttons */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -544,9 +568,16 @@ export default function ProductMaster({
               ) : (
                 filteredProducts.map((p) => {
                   return (
-                    <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
+                    <tr 
+                      key={p.id} 
+                      onClick={() => handleOpenEdit(p)}
+                      className="hover:bg-slate-50 transition-colors cursor-pointer group"
+                    >
                       <td className="px-5 py-4">
-                        <div className="font-bold text-slate-900">{p.productId}</div>
+                        <div className="font-bold text-slate-900 group-hover:text-blue-600 transition-colors flex items-center gap-1.5">
+                          <span>{p.productId}</span>
+                          <Edit2 className="w-3 h-3 text-slate-300 group-hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
                         <div className="text-[10px] text-slate-400 font-mono mt-0.5">{p.sku}</div>
                       </td>
                       <td className="px-5 py-4">
@@ -561,16 +592,17 @@ export default function ProductMaster({
                           {p.purchasePrice.toLocaleString()} {p.purchaseCurrency}
                         </td>
                       )}
-                      <td className="px-5 py-4 text-right">
+                      <td className="px-5 py-4 text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1.5">
-                          {isAdmin ? (
+                          {canEdit ? (
                             <>
                               <button
                                 onClick={() => handleOpenEdit(p)}
-                                className="bg-white hover:bg-slate-100 text-slate-600 p-1.5 rounded border border-slate-200 hover:border-slate-300 transition-colors cursor-pointer"
-                                title="編集"
+                                className="bg-blue-50 hover:bg-blue-100 text-blue-700 px-2.5 py-1.5 rounded border border-blue-200 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                title="製剤情報を編集・更新"
                               >
                                 <Edit2 className="w-3.5 h-3.5" />
+                                <span>編集</span>
                               </button>
                               <button
                                 onClick={() => handleDelete(p.id, p.nameJa)}
@@ -598,12 +630,13 @@ export default function ProductMaster({
       </div>
 
       {/* Form Dialog Modal */}
-      {isFormOpen && isAdmin && (
+      {isFormOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-              <h3 className="text-sm font-bold text-slate-900">
-                {editingProduct ? '製剤情報の編集' : '新規製剤追加'}
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <Edit2 className="w-4 h-4 text-blue-600" />
+                <span>{editingProduct ? `製剤情報の編集 (${editingProduct.nameJa})` : '新規製剤追加'}</span>
               </h3>
               <button onClick={() => setIsFormOpen(false)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
                 <X className="w-5 h-5" />
@@ -620,8 +653,7 @@ export default function ProductMaster({
                     required
                     value={formFields.productId}
                     onChange={(e) => setFormFields(prev => ({ ...prev, productId: e.target.value.toUpperCase() }))}
-                    disabled={!!editingProduct}
-                    className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs bg-slate-50 font-mono focus:outline-none focus:border-blue-500"
+                    className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500"
                     placeholder="PRD-001"
                   />
                 </div>
@@ -633,7 +665,6 @@ export default function ProductMaster({
                     required
                     value={formFields.sku}
                     onChange={(e) => setFormFields(prev => ({ ...prev, sku: e.target.value.toUpperCase() }))}
-                    disabled={!!editingProduct}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500"
                     placeholder="SKU-BT001"
                   />
@@ -825,7 +856,17 @@ export default function ProductMaster({
                   />
                 </div>
 
-
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">適正在庫数 (発注目安) <span className="text-red-500">*</span></label>
+                  <input
+                    type="number"
+                    value={formFields.minStock}
+                    onChange={(e) => setFormFields(prev => ({ ...prev, minStock: Number(e.target.value) }))}
+                    className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500"
+                    min="0"
+                    placeholder="20"
+                  />
+                </div>
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">保管温度帯</label>
@@ -866,16 +907,19 @@ export default function ProductMaster({
               <div className="border-t border-slate-100 pt-4 flex items-center justify-end gap-2.5">
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => setIsFormOpen(false)}
-                  className="bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded text-xs font-semibold hover:bg-slate-50 cursor-pointer"
+                  className="bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded text-xs font-semibold hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
                 >
                   キャンセル
                 </button>
                 <button
                   type="submit"
-                  className="bg-blue-600 text-white px-5 py-2 rounded text-xs font-bold hover:bg-blue-700 cursor-pointer"
+                  disabled={isSubmitting}
+                  className="bg-blue-600 text-white px-5 py-2 rounded text-xs font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 cursor-pointer shadow-sm"
                 >
-                  {editingProduct ? '更新する' : '登録する'}
+                  {isSubmitting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{isSubmitting ? '保存中...' : (editingProduct ? '更新して保存' : '新規登録')}</span>
                 </button>
               </div>
             </form>
