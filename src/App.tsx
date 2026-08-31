@@ -1540,6 +1540,36 @@ export default function App() {
     await logAuditAction('PRODUCT_DELETE', id, 'Exist', `Deleted product and its ${lotCount} associated inventory lots`);
   };
 
+  const handleClearAllProducts = async () => {
+    const productSnap = await getDocs(collection(db, 'products'));
+    const lotSnap = await getDocs(collection(db, 'inventoryLots'));
+
+    const batch = writeBatch(db);
+    let deletedProductsCount = 0;
+    let deletedLotsCount = 0;
+
+    productSnap.forEach(pDoc => {
+      batch.delete(doc(db, 'products', pDoc.id));
+      deletedProductsCount++;
+    });
+
+    lotSnap.forEach(lDoc => {
+      batch.delete(doc(db, 'inventoryLots', lDoc.id));
+      deletedLotsCount++;
+    });
+
+    if (deletedProductsCount > 0 || deletedLotsCount > 0) {
+      await batch.commit();
+    }
+
+    await logAuditAction(
+      'PRODUCT_CLEAR_ALL',
+      'All Products',
+      'Exist',
+      `製剤マスタ全データクリア実行 (${deletedProductsCount}件の製剤、${deletedLotsCount}件の在庫ロットを完全削除)`
+    );
+  };
+
   const handleImportProducts = async (newProducts: Omit<Product, 'id' | 'createdAt'>[]) => {
     const defaultWId = settings.defaultWarehouseId || warehouses.find(w => w.isDefault)?.id || warehouses[0]?.id || '';
     const defaultWName = warehouses.find(w => w.id === defaultWId)?.name || 'デフォルト倉庫';
@@ -1873,6 +1903,7 @@ export default function App() {
               onAddProduct={handleAddProduct}
               onUpdateProduct={handleUpdateProduct}
               onDeleteProduct={handleDeleteProduct}
+              onClearAllProducts={handleClearAllProducts}
               onImportProducts={handleImportProducts}
             />
           )}

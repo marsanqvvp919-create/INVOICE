@@ -382,55 +382,63 @@ export default function Dashboard({
             </div>
             
             <div className="p-4 md:p-5 max-h-[320px] overflow-y-auto space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {[...products]
-                  .sort((a, b) => {
-                    const stockA = a.currentStock || 0;
-                    const stockB = b.currentStock || 0;
-                    if (stockB !== stockA) {
-                      return stockB - stockA; // 在庫あり（在庫数が多いもの）を優先
-                    }
-                    return (a.nameJa || '').localeCompare(b.nameJa || '', 'ja');
-                  })
-                  .map(p => {
-                    const stock = p.currentStock || 0;
-                    const isLow = stock <= (p.minStock || 0);
-                    const hasStock = stock > 0;
-                    return (
-                      <div 
-                        key={p.id} 
-                        className={`p-3 rounded-xl border flex items-center justify-between transition-colors ${
-                          hasStock 
-                            ? 'border-slate-200/90 bg-white hover:bg-slate-50' 
-                            : 'border-slate-100 bg-slate-50/60 opacity-75'
-                        }`}
-                      >
-                        <div className="min-w-0 pr-2">
-                          <p className="font-bold text-xs text-slate-900 truncate">{p.nameJa}</p>
-                          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">SKU: {p.sku}</p>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <div className="flex items-baseline justify-end gap-1 font-mono">
-                            <span className={`text-sm font-black ${isLow && hasStock ? 'text-rose-600' : hasStock ? 'text-slate-900' : 'text-slate-400'}`}>
-                              {stock}
-                            </span>
-                            <span className="text-[10px] font-bold text-slate-500">{p.unit}</span>
+              {products.length === 0 ? (
+                <div className="py-8 text-center text-slate-400">
+                  <Package className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+                  <p className="text-xs font-semibold text-slate-600">登録されている製剤データはありません</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">「マスタ詳細」から製剤データを登録してください。</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {[...products]
+                    .sort((a, b) => {
+                      const stockA = a.currentStock || 0;
+                      const stockB = b.currentStock || 0;
+                      if (stockB !== stockA) {
+                        return stockB - stockA; // 在庫あり（在庫数が多いもの）を優先
+                      }
+                      return (a.nameJa || '').localeCompare(b.nameJa || '', 'ja');
+                    })
+                    .map(p => {
+                      const stock = p.currentStock || 0;
+                      const isLow = stock <= (p.minStock || 0);
+                      const hasStock = stock > 0;
+                      return (
+                        <div 
+                          key={p.id} 
+                          className={`p-3 rounded-xl border flex items-center justify-between transition-colors ${
+                            hasStock 
+                              ? 'border-slate-200/90 bg-white hover:bg-slate-50' 
+                              : 'border-slate-100 bg-slate-50/60 opacity-75'
+                          }`}
+                        >
+                          <div className="min-w-0 pr-2">
+                            <p className="font-bold text-xs text-slate-900 truncate">{p.nameJa}</p>
+                            <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">SKU: {p.sku}</p>
                           </div>
-                          {isLow && hasStock && (
-                            <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200 inline-block mt-0.5">
-                              適正在庫割れ
-                            </span>
-                          )}
-                          {!hasStock && (
-                            <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.2 rounded inline-block mt-0.5">
-                              在庫切れ (0)
-                            </span>
-                          )}
+                          <div className="text-right shrink-0">
+                            <div className="flex items-baseline justify-end gap-1 font-mono">
+                              <span className={`text-sm font-black ${isLow && hasStock ? 'text-rose-600' : hasStock ? 'text-slate-900' : 'text-slate-400'}`}>
+                                {stock}
+                              </span>
+                              <span className="text-[10px] font-bold text-slate-500">{p.unit}</span>
+                            </div>
+                            {isLow && hasStock && (
+                              <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200 inline-block mt-0.5">
+                                適正在庫割れ
+                              </span>
+                            )}
+                            {!hasStock && (
+                              <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.2 rounded inline-block mt-0.5">
+                                在庫切れ (0)
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
-              </div>
+                      );
+                    })}
+                </div>
+              )}
             </div>
           </div>
 

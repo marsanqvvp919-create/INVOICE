@@ -26,6 +26,7 @@ interface ProductMasterProps {
   onAddProduct: (product: Omit<Product, 'id' | 'createdAt'>) => Promise<void>;
   onUpdateProduct: (id: string, product: Partial<Product>) => Promise<void>;
   onDeleteProduct: (id: string) => Promise<void>;
+  onClearAllProducts?: () => Promise<void>;
   onImportProducts: (products: Omit<Product, 'id' | 'createdAt'>[]) => Promise<void>;
 }
 
@@ -37,6 +38,7 @@ export default function ProductMaster({
   onAddProduct, 
   onUpdateProduct, 
   onDeleteProduct,
+  onClearAllProducts,
   onImportProducts
 }: ProductMasterProps) {
   
@@ -45,6 +47,8 @@ export default function ProductMaster({
   const [sortKey, setSortKey] = useState<'nameEn' | 'nameJa' | 'productId' | 'sku' | 'invoicePrice' | 'purchasePrice' | 'currentStock'>('nameEn');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [isFormOpen, setIsFormOpen] = useState(false);
+  const [isClearModalOpen, setIsClearModalOpen] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -208,6 +212,22 @@ export default function ProductMaster({
         console.error(err);
         alert('削除中にエラーが発生しました。');
       }
+    }
+  };
+
+  const handleExecuteClearAll = async () => {
+    if (!onClearAllProducts) return;
+    setIsClearing(true);
+    try {
+      await onClearAllProducts();
+      setIsClearModalOpen(false);
+      setSuccessMsg('製剤マスタのすべてのデータをクリアしました。');
+      setTimeout(() => setSuccessMsg(null), 5000);
+    } catch (err: any) {
+      console.error(err);
+      alert('データクリア中にエラーが発生しました: ' + (err.message || String(err)));
+    } finally {
+      setIsClearing(false);
     }
   };
 
@@ -416,6 +436,17 @@ export default function ProductMaster({
         </div>
         
         <div className="flex flex-wrap items-center gap-2">
+          {products.length > 0 && onClearAllProducts && (
+            <button
+              onClick={() => setIsClearModalOpen(true)}
+              className="bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm transition-colors"
+              title="製剤マスタのすべてのデータをクリア"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+              <span>全データクリア</span>
+            </button>
+          )}
+
           <button
             onClick={handleExportCsv}
             className="bg-white border border-slate-200 text-slate-700 px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 hover:bg-slate-50 cursor-pointer shadow-sm"
@@ -561,8 +592,40 @@ export default function ProductMaster({
             <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
               {filteredProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={isAdmin ? 5 : 4} className="text-center py-10 text-slate-400">
-                    製剤データが見つかりません
+                  <td colSpan={isAdmin ? 5 : 4} className="text-center py-16 px-4">
+                    <div className="max-w-md mx-auto flex flex-col items-center justify-center space-y-3">
+                      <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
+                        <FileSpreadsheet className="w-6 h-6" />
+                      </div>
+                      <div>
+                        <p className="font-bold text-slate-800 text-sm">
+                          {searchQuery ? '検索条件に一致する製剤は見つかりませんでした' : '製剤マスタに登録されているデータはありません'}
+                        </p>
+                        <p className="text-slate-400 text-xs mt-1">
+                          {searchQuery ? '別のキーワードで再検索してください。' : '「新規製剤追加」または「CSV一括登録」から製剤情報を登録してください。'}
+                        </p>
+                      </div>
+                      {!searchQuery && (
+                        <div className="flex items-center gap-2 pt-2">
+                          <button
+                            onClick={handleOpenAdd}
+                            className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>新規製剤を追加</span>
+                          </button>
+                          {isAdmin && (
+                            <button
+                              onClick={() => setIsCsvImportOpen(true)}
+                              className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                            >
+                              <Upload className="w-3.5 h-3.5 text-slate-500" />
+                              <span>CSV一括登録</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ) : (
@@ -1054,6 +1117,50 @@ export default function ProductMaster({
                 className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 text-white disabled:text-slate-400 px-5 py-2 rounded text-xs font-bold cursor-pointer transition-colors"
               >
                 一括インポートを確定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear All Confirmation Modal */}
+      {isClearModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100">
+            <div className="p-6 text-center space-y-4">
+              <div className="w-14 h-14 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mx-auto ring-8 ring-rose-50/50">
+                <Trash2 className="w-7 h-7" />
+              </div>
+              
+              <div className="space-y-2">
+                <h3 className="text-base font-bold text-slate-900">製剤マスタの全データをクリアしますか？</h3>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  現在登録されている製剤データ（全 <span className="font-bold text-rose-600 font-mono">{products.length}</span> 件）および紐づく在庫ロット情報をすべて削除・クリアします。
+                </p>
+                <div className="bg-amber-50 border border-amber-200/80 rounded-xl p-3 text-left flex items-start gap-2 text-[11px] text-amber-800 font-medium">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <span>この操作を実行すると元に戻すことはできません。必要に応じて事前に「CSV出力」でバックアップを保存してください。</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isClearing}
+                onClick={() => setIsClearModalOpen(false)}
+                className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer disabled:opacity-50 transition-colors"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                disabled={isClearing}
+                onClick={handleExecuteClearAll}
+                className="bg-rose-600 hover:bg-rose-700 text-white px-5 py-2 rounded-lg text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm disabled:opacity-50 transition-colors"
+              >
+                {isClearing && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isClearing ? 'クリア処理中...' : '全データを完全に削除・クリア'}</span>
               </button>
             </div>
           </div>
