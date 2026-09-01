@@ -120,7 +120,7 @@ export default function Dashboard({
         message: `インボイス [${shipment.invoiceNo}] のステータスを【${
           targetStatus === 'CONFIRMED' ? '確定' :
           targetStatus === 'SHIPPED' ? '発送済み' :
-          targetStatus === 'CANCELLED' ? 'キャンセル（在庫自動復元完了）' : '下書き'
+          targetStatus === 'CANCELLED' ? 'キャンセル' : '下書き'
         }】に正常更新しました。`
       });
     } catch (err: any) {
@@ -326,7 +326,7 @@ export default function Dashboard({
                                   type="button"
                                   onClick={() => openStatusModal(s, 'CANCELLED')}
                                   className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 px-2 py-1 rounded text-[10px] font-bold cursor-pointer transition-colors flex items-center gap-0.5"
-                                  title="発送をキャンセルして在庫を復元"
+                                  title="発送をキャンセル"
                                 >
                                   <Ban className="w-3 h-3 text-rose-600" />
                                   <span>取消</span>
@@ -339,7 +339,7 @@ export default function Dashboard({
                                 type="button"
                                 onClick={() => openStatusModal(s, 'CANCELLED')}
                                 className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 px-2 py-1 rounded text-[10px] font-bold cursor-pointer transition-colors flex items-center gap-0.5"
-                                title="発送をキャンセルして在庫を復元"
+                                title="発送をキャンセル"
                               >
                                 <Ban className="w-3 h-3 text-rose-600" />
                                 <span>取消</span>
@@ -359,7 +359,7 @@ export default function Dashboard({
             </div>
           </div>
 
-          {/* Product Stock Status Grid */}
+          {/* Product Master Grid */}
           <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
               <div className="flex items-center gap-2.5">
@@ -367,8 +367,8 @@ export default function Dashboard({
                   <Box className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-extrabold text-slate-900">製剤別在庫状況</h3>
-                  <p className="text-[11px] text-slate-500 font-medium">主要製剤のリアルタイム在庫数 ({products.length}品目)</p>
+                  <h3 className="text-sm font-extrabold text-slate-900">登録製剤一覧</h3>
+                  <p className="text-[11px] text-slate-500 font-medium">登録済み製剤マスタ ({products.length}品目)</p>
                 </div>
               </div>
               <button 
@@ -376,7 +376,7 @@ export default function Dashboard({
                 onClick={() => setActiveTab('products')}
                 className="text-xs text-indigo-600 hover:text-indigo-700 font-bold flex items-center gap-1.5 px-3 py-1.5 rounded-xl hover:bg-indigo-50 transition-colors cursor-pointer"
               >
-                <span>マスタ詳細</span>
+                <span>マスタ管理</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -386,53 +386,31 @@ export default function Dashboard({
                 <div className="py-8 text-center text-slate-400">
                   <Package className="w-8 h-8 mx-auto text-slate-300 mb-2" />
                   <p className="text-xs font-semibold text-slate-600">登録されている製剤データはありません</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">「マスタ詳細」から製剤データを登録してください。</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">「マスタ管理」から製剤データを登録してください。</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {[...products]
-                    .sort((a, b) => {
-                      const stockA = a.currentStock || 0;
-                      const stockB = b.currentStock || 0;
-                      if (stockB !== stockA) {
-                        return stockB - stockA; // 在庫あり（在庫数が多いもの）を優先
-                      }
-                      return (a.nameJa || '').localeCompare(b.nameJa || '', 'ja');
-                    })
+                    .sort((a, b) => (a.nameJa || '').localeCompare(b.nameJa || '', 'ja'))
                     .map(p => {
-                      const stock = p.currentStock || 0;
-                      const isLow = stock <= (p.minStock || 0);
-                      const hasStock = stock > 0;
                       return (
                         <div 
                           key={p.id} 
-                          className={`p-3 rounded-xl border flex items-center justify-between transition-colors ${
-                            hasStock 
-                              ? 'border-slate-200/90 bg-white hover:bg-slate-50' 
-                              : 'border-slate-100 bg-slate-50/60 opacity-75'
-                          }`}
+                          className="p-3 rounded-xl border border-slate-200/90 bg-white hover:bg-slate-50 flex items-center justify-between transition-colors"
                         >
                           <div className="min-w-0 pr-2">
                             <p className="font-bold text-xs text-slate-900 truncate">{p.nameJa}</p>
-                            <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">SKU: {p.sku}</p>
+                            <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
+                              {p.nameEn ? `${p.nameEn} • ` : ''}SKU: {p.sku}
+                            </p>
                           </div>
                           <div className="text-right shrink-0">
-                            <div className="flex items-baseline justify-end gap-1 font-mono">
-                              <span className={`text-sm font-black ${isLow && hasStock ? 'text-rose-600' : hasStock ? 'text-slate-900' : 'text-slate-400'}`}>
-                                {stock}
-                              </span>
-                              <span className="text-[10px] font-bold text-slate-500">{p.unit}</span>
+                            <div className="font-mono text-xs font-bold text-slate-800">
+                              ¥{(p.invoicePrice || 0).toLocaleString()} JPY
                             </div>
-                            {isLow && hasStock && (
-                              <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200 inline-block mt-0.5">
-                                適正在庫割れ
-                              </span>
-                            )}
-                            {!hasStock && (
-                              <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.2 rounded inline-block mt-0.5">
-                                在庫切れ (0)
-                              </span>
-                            )}
+                            <span className="text-[10px] text-slate-400 font-sans">
+                              {p.spec || p.unit || 'pcs'}
+                            </span>
                           </div>
                         </div>
                       );

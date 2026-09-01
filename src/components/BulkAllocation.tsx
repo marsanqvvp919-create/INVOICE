@@ -411,12 +411,8 @@ export default function BulkAllocation({
     const product = products.find(p => p.id === prodId);
     if (!product) return;
 
-    // FEFO lot selection
-    const productLots = lots.filter(l => l.productId === prodId && l.warehouseId === warehouseId && l.currentStock > 0);
-    const sortedLots = [...productLots].sort((a, b) => (a.expiryDate || '').localeCompare(b.expiryDate || ''));
-    const chosenLot = sortedLots[0];
-    const lotNo = chosenLot ? chosenLot.lotNo : (product.lotNo || 'LOT-TEMP');
-    const expiryDate = chosenLot ? chosenLot.expiryDate : (product.expiryDate || '');
+    const lotNo = product.lotNo || '';
+    const expiryDate = product.expiryDate || '';
 
     setAllocatedClinics(prev => prev.map(c => {
       if (c.id !== blockId) return c;
@@ -439,8 +435,8 @@ export default function BulkAllocation({
             id: itemKey,
             productId: prodId,
             sku: product.sku || '',
-            lotNo: lotNo || '',
-            expiryDate: expiryDate || '',
+            lotNo: lotNo,
+            expiryDate: expiryDate,
             qty: 5,
             unitPrice: product.invoicePrice || 0,
             weight: product.weight || 0.03,
@@ -464,18 +460,13 @@ export default function BulkAllocation({
     }));
   };
 
-  // Handle product select inside clinic block item (FEFO recommended automatically)
+  // Handle product select inside clinic block item
   const handleItemProductSelect = (blockId: string, itemId: string, prodId: string) => {
     const product = products.find(p => p.id === prodId);
     if (!product) return;
 
-    // FEFO: Find unexpired lots of this product in chosen warehouse, sort by expiryDate asc
-    const productLots = lots.filter(l => l.productId === prodId && l.warehouseId === warehouseId && l.currentStock > 0);
-    const sortedLots = [...productLots].sort((a, b) => (a.expiryDate || '').localeCompare(b.expiryDate || ''));
-    
-    const chosenLot = sortedLots[0];
-    const lotNo = chosenLot ? chosenLot.lotNo : (product.lotNo || 'LOT-TEMP');
-    const expiryDate = chosenLot ? chosenLot.expiryDate : (product.expiryDate || '');
+    const lotNo = product.lotNo || '';
+    const expiryDate = product.expiryDate || '';
 
     setAllocatedClinics(prev => prev.map(c => {
       if (c.id !== blockId) return c;
@@ -487,8 +478,8 @@ export default function BulkAllocation({
             ...it,
             productId: prodId,
             sku: product.sku || '',
-            lotNo: lotNo || '',
-            expiryDate: expiryDate || '',
+            lotNo: lotNo,
+            expiryDate: expiryDate,
             unitPrice: product.invoicePrice || 0,
             weight: product.weight || 0.03,
             unit: product.unit || 'pcs',
@@ -500,7 +491,7 @@ export default function BulkAllocation({
     }));
   };
 
-  // Handle manual lot select inside clinic block item
+  // Handle manual lot select/input inside clinic block item
   const handleItemLotSelect = (blockId: string, itemId: string, lotNum: string) => {
     setAllocatedClinics(prev => prev.map(c => {
       if (c.id !== blockId) return c;
@@ -508,11 +499,9 @@ export default function BulkAllocation({
         ...c,
         items: c.items.map(it => {
           if (it.id !== itemId) return it;
-          const targetLot = lots.find(l => l.productId === it.productId && l.lotNo === lotNum && l.warehouseId === warehouseId);
           return {
             ...it,
-            lotNo: lotNum,
-            expiryDate: targetLot?.expiryDate || it.expiryDate
+            lotNo: lotNum
           };
         })
       };
@@ -535,20 +524,21 @@ export default function BulkAllocation({
 
   // Aggregated quantities calculation across all clinics
   const getAggregatedAllocations = () => {
-    const agg: Record<string, { productId: string; lotNo: string; qty: number; productName: string }> = {};
+    const agg: Record<string, { productId: string; lotNo: string; qty: number; productName: string; sku: string }> = {};
     
     allocatedClinics.forEach(c => {
       c.items.forEach(it => {
-        if (!it.productId || !it.lotNo) return;
-        const key = `${it.productId}_${it.lotNo}`;
+        if (!it.productId) return;
+        const key = it.productId;
         const prod = products.find(p => p.id === it.productId);
         
         if (!agg[key]) {
           agg[key] = {
             productId: it.productId,
-            lotNo: it.lotNo,
+            lotNo: it.lotNo || '-',
             qty: 0,
-            productName: prod?.nameJa || '不明な製剤'
+            productName: prod?.nameJa || prod?.nameEn || '製剤',
+            sku: prod?.sku || ''
           };
         }
         agg[key].qty += Number(it.qty) || 0;
@@ -559,24 +549,6 @@ export default function BulkAllocation({
   };
 
   const aggregatedList = getAggregatedAllocations();
-
-  // Validate stock overages
-  const getStockValidationErrors = () => {
-    const errors: string[] = [];
-    
-    aggregatedList.forEach(item => {
-      const lotStock = lots.find(l => l.productId === item.productId && l.lotNo === item.lotNo && l.warehouseId === warehouseId);
-      const limit = lotStock ? lotStock.currentStock : 0;
-      
-      if (item.qty > limit) {
-        errors.push(`【${item.productName}】入荷元:${item.lotNo} の一括振分総数 (${item.qty}個) が、現在庫数 (${limit}個) を超過しています。`);
-      }
-    });
-    
-    return errors;
-  };
-
-  const stockValidationErrors = getStockValidationErrors();
 
   // Submit batch allocation - validation & show modal
   const handleBulkSubmit = () => {
@@ -595,10 +567,6 @@ export default function BulkAllocation({
     }
     if (allocatedClinics.some(c => c.items.length === 0 || c.items.some(it => !it.productId))) {
       alert('すべてのクリニックに1点以上の製剤を選択・追加してください。不要な空行があれば削除してください。');
-      return;
-    }
-    if (stockValidationErrors.length > 0) {
-      alert('現在庫数を超過した振り分けがあります。数量を調整してください。');
       return;
     }
 
@@ -1176,9 +1144,6 @@ export default function BulkAllocation({
 
                         {block.items.map((it, itemIdx) => {
                           const product = products.find(p => p.id === it.productId);
-                          const availableLots = lots.filter(l => l.productId === it.productId && l.warehouseId === warehouseId && l.currentStock > 0);
-                          const chosenLotObj = availableLots.find(l => l.lotNo === it.lotNo);
-                          const currentStock = chosenLotObj ? chosenLotObj.currentStock : (availableLots[0]?.currentStock || 0);
 
                           return (
                             <div 
@@ -1209,34 +1174,32 @@ export default function BulkAllocation({
                                   />
                                 </div>
 
-                                {/* Col 2: FEFO Lot Recommendation */}
-                                <div className="md:col-span-4 space-y-1">
-                                  <label className="block text-[10px] font-bold text-slate-500 uppercase flex items-center justify-between">
-                                    <span>出荷元ロット (FEFO)</span>
-                                    {it.expiryDate && (
-                                      <span className="text-[10px] text-slate-400 font-mono">期限: {it.expiryDate}</span>
-                                    )}
-                                  </label>
-                                  {availableLots.length <= 1 ? (
-                                    <div className="w-full border border-slate-200 bg-white rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold text-slate-800 flex items-center justify-between">
-                                      <span>{it.lotNo || 'ロットなし'}</span>
-                                      <span className="text-[10px] font-normal text-slate-400 font-sans">
-                                        (在庫: {currentStock})
-                                      </span>
-                                    </div>
-                                  ) : (
-                                    <select
+                                {/* Col 2: Lot and Expiry */}
+                                <div className="md:col-span-4 grid grid-cols-2 gap-2">
+                                  <div className="space-y-1">
+                                    <label className="block text-[10px] font-bold text-slate-500 uppercase">
+                                      ロット番号
+                                    </label>
+                                    <input
+                                      type="text"
                                       value={it.lotNo}
                                       onChange={(e) => handleItemLotSelect(block.id, it.id, e.target.value)}
+                                      placeholder="Lot No."
                                       className="w-full border border-slate-200 bg-white rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold text-slate-800 focus:outline-none focus:border-blue-500"
-                                    >
-                                      {availableLots.map(l => (
-                                        <option key={l.id} value={l.lotNo}>
-                                          {l.lotNo} (期限: {l.expiryDate} | 残: {l.currentStock})
-                                        </option>
-                                      ))}
-                                    </select>
-                                  )}
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <label className="block text-[10px] font-bold text-slate-500 uppercase">
+                                      有効期限
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={it.expiryDate}
+                                      onChange={(e) => handleItemFieldChange(block.id, it.id, 'expiryDate', e.target.value)}
+                                      placeholder="YYYY-MM-DD"
+                                      className="w-full border border-slate-200 bg-white rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-800 focus:outline-none focus:border-blue-500"
+                                    />
+                                  </div>
                                 </div>
 
                                 {/* Col 3: Quantity Stepper */}
@@ -1338,16 +1301,16 @@ export default function BulkAllocation({
           )}
         </div>
 
-        {/* Real-time sum stock checking & Submit Panel (Right col) */}
+        {/* Real-time sum product aggregation & Submit Panel (Right col) */}
         <div className="space-y-6">
           <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-5 space-y-4 sticky top-6">
             <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2 flex items-center gap-2">
               <Layers className="w-4.5 h-4.5 text-indigo-600" />
-              <span>一括振分合計 在庫照合</span>
+              <span>一括振分合計 製剤集計</span>
             </h3>
 
             <p className="text-xs text-slate-500 leading-relaxed">
-              登録された全クリニックへの配分合計数量と、選択倉庫の現在庫数をリアルタイムに照合します。
+              登録された全クリニックへの配分合計数量をリアルタイムに集計します。
             </p>
 
             {aggregatedList.length === 0 ? (
@@ -1355,49 +1318,25 @@ export default function BulkAllocation({
                 クリニックと配分製剤が入力されると、ここに合計数量が表示されます。
               </div>
             ) : (
-              <div className="space-y-2.5 max-h-[320px] overflow-y-auto pr-1">
-                {aggregatedList.map((item, idx) => {
-                  const lotStock = lots.find(l => l.productId === item.productId && l.lotNo === item.lotNo && l.warehouseId === warehouseId);
-                  const maxQty = lotStock ? lotStock.currentStock : 0;
-                  const isExceeded = item.qty > maxQty;
-
-                  return (
-                    <div 
-                      key={idx} 
-                      className={`p-3 rounded-xl border text-xs space-y-1 transition-colors ${
-                        isExceeded ? 'bg-rose-50 border-rose-200' : 'bg-slate-50 border-slate-200/80'
-                      }`}
-                    >
-                      <div className="flex justify-between items-start gap-2">
-                        <span className="font-bold text-slate-800 line-clamp-1">{item.productName}</span>
-                        <span className={`font-mono font-bold shrink-0 ${isExceeded ? 'text-rose-600 text-sm' : 'text-slate-900'}`}>
-                          {item.qty} / {maxQty} 個
-                        </span>
-                      </div>
-                      <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-                        <span>ロット: {item.lotNo}</span>
-                        <span className={isExceeded ? 'text-rose-600 font-bold' : 'text-emerald-600 font-semibold'}>
-                          {isExceeded ? '⚠️ 在庫不足' : '✓ 在庫あり'}
-                        </span>
-                      </div>
+              <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+                {aggregatedList.map((item, idx) => (
+                  <div 
+                    key={idx} 
+                    className="p-3 rounded-xl border bg-slate-50 border-slate-200/80 text-xs space-y-1"
+                  >
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="font-bold text-slate-800 line-clamp-1">{item.productName}</span>
+                      <span className="font-mono font-bold shrink-0 text-indigo-700">
+                        {item.qty} 個
+                      </span>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Verification Errors Box */}
-            {stockValidationErrors.length > 0 && (
-              <div className="bg-rose-50 border border-rose-200 text-rose-900 p-3.5 rounded-xl text-xs space-y-1.5">
-                <div className="font-bold flex items-center gap-1.5 text-rose-700">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>在庫数が不足しています</span>
-                </div>
-                <ul className="list-disc pl-4 space-y-1 text-rose-700 text-[11px]">
-                  {stockValidationErrors.map((err, i) => (
-                    <li key={i}>{err}</li>
-                  ))}
-                </ul>
+                    {item.sku && (
+                      <div className="text-[10px] text-slate-400 font-mono">
+                        SKU: {item.sku}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 
@@ -1619,13 +1558,13 @@ export default function BulkAllocation({
                 </div>
               </div>
 
-              <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl text-amber-800 leading-relaxed text-[11px] space-y-1">
-                <p className="font-bold flex items-center gap-1 text-amber-900">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                  <span>注意事項</span>
+              <div className="p-3 bg-blue-50 border border-blue-200/80 rounded-xl text-blue-800 leading-relaxed text-[11px] space-y-1">
+                <p className="font-bold flex items-center gap-1 text-blue-900">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>確認事項</span>
                 </p>
-                <p>・確定を実行すると即座に海外倉庫の在庫から出庫が行われます。</p>
                 <p>・各クリニック用の商用インボイス(Commercial Invoice)のPDFが一括作成され、ZIP形式でダウンロードされます。</p>
+                <p>・インボイス履歴にも個別の発送伝票として登録されます。</p>
               </div>
             </div>
 

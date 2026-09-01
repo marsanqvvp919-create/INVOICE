@@ -51,6 +51,7 @@ export default function ProductMaster({
   const [isClearing, setIsClearing] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
   const [csvPreview, setCsvPreview] = useState<any[]>([]);
@@ -116,6 +117,7 @@ export default function ProductMaster({
 
   const handleOpenAdd = () => {
     resetForm();
+    setModalError(null);
     const nextNum = products.length + 1;
     const padded = String(nextNum).padStart(3, '0');
     setFormFields(prev => ({ 
@@ -127,6 +129,7 @@ export default function ProductMaster({
   };
 
   const handleOpenEdit = (product: Product) => {
+    setModalError(null);
     setEditingProduct(product);
     setFormFields({
       productId: product.productId || '',
@@ -135,19 +138,19 @@ export default function ProductMaster({
       nameEn: product.nameEn || '',
       manufacturer: product.manufacturer || '',
       spec: product.spec || '',
-      content: typeof product.content === 'number' ? product.content : 1,
+      content: typeof product.content === 'number' && !isNaN(product.content) ? product.content : 1,
       unit: product.unit || '',
       hsCode: product.hsCode || '',
       countryOfOrigin: product.countryOfOrigin || '',
       purchaseCurrency: product.purchaseCurrency || 'USD',
-      purchasePrice: typeof product.purchasePrice === 'number' ? product.purchasePrice : 0,
-      invoicePrice: typeof product.invoicePrice === 'number' ? product.invoicePrice : 0,
-      weight: typeof product.weight === 'number' ? product.weight : 0.03,
+      purchasePrice: typeof product.purchasePrice === 'number' && !isNaN(product.purchasePrice) ? product.purchasePrice : 0,
+      invoicePrice: typeof product.invoicePrice === 'number' && !isNaN(product.invoicePrice) ? product.invoicePrice : 0,
+      weight: typeof product.weight === 'number' && !isNaN(product.weight) ? product.weight : 0.03,
       boxSize: product.boxSize || '',
       lotNo: product.lotNo || '',
       expiryDate: product.expiryDate || '',
-      currentStock: typeof product.currentStock === 'number' ? product.currentStock : 0,
-      minStock: typeof product.minStock === 'number' ? product.minStock : 20,
+      currentStock: typeof product.currentStock === 'number' && !isNaN(product.currentStock) ? product.currentStock : 0,
+      minStock: typeof product.minStock === 'number' && !isNaN(product.minStock) ? product.minStock : 20,
       temp: product.temp || '',
       notes: product.notes || '',
       active: product.active !== false
@@ -157,39 +160,74 @@ export default function ProductMaster({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setModalError(null);
     
+    // Trim string inputs
+    const pId = (formFields.productId || '').trim().toUpperCase();
+    const pSku = (formFields.sku || '').trim().toUpperCase();
+    const pNameJa = (formFields.nameJa || '').trim();
+    const pNameEn = (formFields.nameEn || '').trim();
+
     // Validation
-    if (!formFields.productId || !formFields.sku || !formFields.nameJa || !formFields.nameEn) {
-      alert('商品ID、SKU、製剤名（日本語・英語）は必須項目です。');
+    if (!pId) {
+      setModalError('商品IDを入力してください。');
+      return;
+    }
+    if (!pSku) {
+      setModalError('SKUコードを入力してください。');
+      return;
+    }
+    if (!pNameJa) {
+      setModalError('製剤名（日本語）を入力してください。');
+      return;
+    }
+    if (!pNameEn) {
+      setModalError('製剤名（英語表記）を入力してください。');
       return;
     }
 
-    if (formFields.invoicePrice < 0 || formFields.purchasePrice < 0) {
-      alert('単価は0以上を設定してください。');
+    const invPrice = Number(formFields.invoicePrice) || 0;
+    const purPrice = Number(formFields.purchasePrice) || 0;
+    if (invPrice < 0 || purPrice < 0) {
+      setModalError('単価は0以上を設定してください。');
       return;
     }
 
     // Check SKU / ID duplicate against other products
-    const isSkuDup = products.some(p => p.id !== editingProduct?.id && (p.sku || '').trim().toUpperCase() === formFields.sku.trim().toUpperCase());
-    const isIdDup = products.some(p => p.id !== editingProduct?.id && (p.productId || '').trim().toUpperCase() === formFields.productId.trim().toUpperCase());
+    const isSkuDup = products.some(p => p.id !== editingProduct?.id && (p.sku || '').trim().toUpperCase() === pSku);
+    const isIdDup = products.some(p => p.id !== editingProduct?.id && (p.productId || '').trim().toUpperCase() === pId);
     
     if (isSkuDup) {
-      alert('このSKUコードは既に他の製剤で登録されています。別のSKUを指定してください。');
+      setModalError(`SKUコード「${pSku}」は既に他の製剤で登録されています。別のSKUを指定してください。`);
       return;
     }
     if (isIdDup) {
-      alert('この商品IDは既に他の製剤で登録されています。別のIDを指定してください。');
+      setModalError(`商品ID「${pId}」は既に他の製剤で登録されています。別のIDを指定してください。`);
       return;
     }
+
+    const sanitizedData = {
+      ...formFields,
+      productId: pId,
+      sku: pSku,
+      nameJa: pNameJa,
+      nameEn: pNameEn,
+      content: Number(formFields.content) || 1,
+      invoicePrice: invPrice,
+      purchasePrice: purPrice,
+      weight: Number(formFields.weight) || 0.03,
+      currentStock: Number(formFields.currentStock) || 0,
+      minStock: Number(formFields.minStock) || 20,
+    };
 
     setIsSubmitting(true);
     try {
       if (editingProduct) {
-        await onUpdateProduct(editingProduct.id, formFields);
-        setSuccessMsg(`製剤「${formFields.nameJa}」の情報を保存・更新しました。`);
+        await onUpdateProduct(editingProduct.id, sanitizedData);
+        setSuccessMsg(`製剤「${sanitizedData.nameJa}」の情報を保存・更新しました。`);
       } else {
-        await onAddProduct(formFields);
-        setSuccessMsg(`製剤「${formFields.nameJa}」を新規登録しました。`);
+        await onAddProduct(sanitizedData);
+        setSuccessMsg(`製剤「${sanitizedData.nameJa}」を新規登録しました。`);
       }
       setIsFormOpen(false);
       resetForm();
@@ -197,8 +235,10 @@ export default function ProductMaster({
         setSuccessMsg(null);
       }, 4000);
     } catch (err: any) {
-      console.error(err);
-      alert('保存中にエラーが発生しました: ' + (err.message || String(err)));
+      console.error('Save error:', err);
+      const errMsg = err.message || String(err);
+      setModalError('保存中にエラーが発生しました: ' + errMsg);
+      alert('保存中にエラーが発生しました: ' + errMsg);
     } finally {
       setIsSubmitting(false);
     }
@@ -706,7 +746,21 @@ export default function ProductMaster({
               </button>
             </div>
             
-            <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-4">
+            <form onSubmit={handleSubmit} noValidate className="flex-1 overflow-y-auto p-6 space-y-4">
+              {modalError && (
+                <div className="bg-rose-50 border border-rose-200 rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-rose-800 animate-fadeIn">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 font-semibold">{modalError}</div>
+                  <button 
+                    type="button" 
+                    onClick={() => setModalError(null)} 
+                    className="text-rose-400 hover:text-rose-700 cursor-pointer ml-auto"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 
                 <div>
@@ -715,7 +769,10 @@ export default function ProductMaster({
                     type="text"
                     required
                     value={formFields.productId}
-                    onChange={(e) => setFormFields(prev => ({ ...prev, productId: e.target.value.toUpperCase() }))}
+                    onChange={(e) => {
+                      setModalError(null);
+                      setFormFields(prev => ({ ...prev, productId: e.target.value.toUpperCase() }));
+                    }}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500"
                     placeholder="PRD-001"
                   />
@@ -727,7 +784,10 @@ export default function ProductMaster({
                     type="text"
                     required
                     value={formFields.sku}
-                    onChange={(e) => setFormFields(prev => ({ ...prev, sku: e.target.value.toUpperCase() }))}
+                    onChange={(e) => {
+                      setModalError(null);
+                      setFormFields(prev => ({ ...prev, sku: e.target.value.toUpperCase() }));
+                    }}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500"
                     placeholder="SKU-BT001"
                   />
@@ -739,7 +799,10 @@ export default function ProductMaster({
                     type="text"
                     required
                     value={formFields.nameJa}
-                    onChange={(e) => setFormFields(prev => ({ ...prev, nameJa: e.target.value }))}
+                    onChange={(e) => {
+                      setModalError(null);
+                      setFormFields(prev => ({ ...prev, nameJa: e.target.value }));
+                    }}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs focus:outline-none focus:border-blue-500"
                     placeholder="Wellstox PURE"
                   />
@@ -751,7 +814,10 @@ export default function ProductMaster({
                     type="text"
                     required
                     value={formFields.nameEn}
-                    onChange={(e) => setFormFields(prev => ({ ...prev, nameEn: e.target.value }))}
+                    onChange={(e) => {
+                      setModalError(null);
+                      setFormFields(prev => ({ ...prev, nameEn: e.target.value }));
+                    }}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs focus:outline-none focus:border-blue-500"
                     placeholder="Wellstox PURE 100U"
                   />
@@ -783,8 +849,11 @@ export default function ProductMaster({
                   <label className="block text-xs font-bold text-slate-700 mb-1">内容量</label>
                   <input
                     type="number"
-                    value={formFields.content}
-                    onChange={(e) => setFormFields(prev => ({ ...prev, content: Number(e.target.value) }))}
+                    value={formFields.content === 0 ? '' : formFields.content}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? 0 : Number(e.target.value);
+                      setFormFields(prev => ({ ...prev, content: val }));
+                    }}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500"
                     min="1"
                   />
@@ -831,11 +900,15 @@ export default function ProductMaster({
                   <label className="block text-xs font-bold text-slate-700 mb-1">インボイス記載単価 (円 / JPY) <span className="text-red-500">*</span></label>
                   <input
                     type="number"
-                    step="1"
+                    step="any"
                     required
-                    value={formFields.invoicePrice}
-                    onChange={(e) => setFormFields(prev => ({ ...prev, invoicePrice: Number(e.target.value) }))}
+                    value={formFields.invoicePrice === 0 ? '' : formFields.invoicePrice}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? 0 : Number(e.target.value);
+                      setFormFields(prev => ({ ...prev, invoicePrice: isNaN(val) ? 0 : val }));
+                    }}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-bold font-mono text-slate-900 focus:outline-none focus:border-blue-500"
+                    placeholder="0"
                   />
                 </div>
 
@@ -854,10 +927,14 @@ export default function ProductMaster({
                     </select>
                     <input
                       type="number"
-                      step="0.01"
-                      value={formFields.purchasePrice}
-                      onChange={(e) => setFormFields(prev => ({ ...prev, purchasePrice: Number(e.target.value) }))}
+                      step="any"
+                      value={formFields.purchasePrice === 0 ? '' : formFields.purchasePrice}
+                      onChange={(e) => {
+                        const val = e.target.value === '' ? 0 : Number(e.target.value);
+                        setFormFields(prev => ({ ...prev, purchasePrice: isNaN(val) ? 0 : val }));
+                      }}
                       className="border border-slate-200 bg-white rounded px-2 py-1 text-xs font-mono font-bold"
+                      placeholder="0"
                     />
                   </div>
                 </div>
@@ -870,10 +947,14 @@ export default function ProductMaster({
                   <label className="block text-xs font-bold text-slate-700 mb-1">1個あたり重量 (kg)</label>
                   <input
                     type="number"
-                    step="0.001"
-                    value={formFields.weight}
-                    onChange={(e) => setFormFields(prev => ({ ...prev, weight: Number(e.target.value) }))}
+                    step="any"
+                    value={formFields.weight === 0 ? '' : formFields.weight}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? 0 : Number(e.target.value);
+                      setFormFields(prev => ({ ...prev, weight: isNaN(val) ? 0 : val }));
+                    }}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500"
+                    placeholder="0.03"
                   />
                 </div>
 
@@ -912,10 +993,14 @@ export default function ProductMaster({
                   <label className="block text-xs font-bold text-slate-700 mb-1">現在庫数 <span className="text-red-500">*</span></label>
                   <input
                     type="number"
-                    value={formFields.currentStock}
-                    onChange={(e) => setFormFields(prev => ({ ...prev, currentStock: Number(e.target.value) }))}
+                    value={formFields.currentStock === 0 ? '' : formFields.currentStock}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? 0 : Number(e.target.value);
+                      setFormFields(prev => ({ ...prev, currentStock: isNaN(val) ? 0 : val }));
+                    }}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500"
                     min="0"
+                    placeholder="0"
                   />
                 </div>
 
@@ -923,8 +1008,11 @@ export default function ProductMaster({
                   <label className="block text-xs font-bold text-slate-700 mb-1">適正在庫数 (発注目安) <span className="text-red-500">*</span></label>
                   <input
                     type="number"
-                    value={formFields.minStock}
-                    onChange={(e) => setFormFields(prev => ({ ...prev, minStock: Number(e.target.value) }))}
+                    value={formFields.minStock === 0 ? '' : formFields.minStock}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? 0 : Number(e.target.value);
+                      setFormFields(prev => ({ ...prev, minStock: isNaN(val) ? 0 : val }));
+                    }}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500"
                     min="0"
                     placeholder="20"

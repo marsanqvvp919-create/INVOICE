@@ -94,9 +94,6 @@ export default function ShipmentAllocation({
     weight: number;
     hsCode: string;
     countryOfOrigin: string;
-    availableLots: InventoryLot[]; // Lots available in the selected warehouse
-    selectedLotMaxStock: number; // Selected lot current stock
-    warningMsg: string;
   }[]>([]);
 
   // Initialize Warehouse and Currency from settings / default warehouse
@@ -132,71 +129,33 @@ export default function ShipmentAllocation({
     if (draft.otherCharges !== undefined) setOtherCharges(draft.otherCharges);
     if (draft.notes) setNotes(draft.notes);
 
-    const targetWarehouseId = draft.warehouseId || warehouseId;
-
     if (draft.items && draft.items.length > 0) {
       const mappedItems = draft.items.map((it: any) => {
         const product = products.find(p => p.id === it.productId);
-        const productLots = lots.filter(l => l.productId === it.productId && (!targetWarehouseId || !l.warehouseId || l.warehouseId === targetWarehouseId) && l.currentStock > 0);
-        const sortedLots = [...productLots].sort((a, b) => (a.expiryDate || '').localeCompare(b.expiryDate || ''));
-        const chosenLot = sortedLots.find(l => l.lotNo === it.lotNo) || sortedLots[0];
-        const maxStock = productLots.length > 0
-          ? productLots.reduce((sum, l) => sum + (l.currentStock || 0), 0)
-          : (product?.currentStock !== undefined ? product.currentStock : 99999);
 
         return {
           id: Math.random().toString(36).substring(2, 9),
           productId: it.productId,
-          sku: it.sku || '',
-          nameEn: it.nameEn || '',
-          nameJa: it.nameJa || '',
-          lotNo: it.lotNo || (chosenLot ? chosenLot.lotNo : 'LOT-TEMP'),
-          expiryDate: it.expiryDate || (chosenLot ? chosenLot.expiryDate : ''),
+          sku: it.sku || product?.sku || '',
+          nameEn: it.nameEn || product?.nameEn || '',
+          nameJa: it.nameJa || product?.nameJa || '',
+          lotNo: it.lotNo || product?.lotNo || '',
+          expiryDate: it.expiryDate || product?.expiryDate || '',
           qty: it.qty || 1,
-          unit: it.unit || 'pcs',
-          unitPrice: it.unitPrice || 0,
-          weight: it.weight || 0.03,
-          hsCode: it.hsCode || '',
-          countryOfOrigin: it.countryOfOrigin || 'Korea',
-          availableLots: sortedLots,
-          selectedLotMaxStock: maxStock,
-          warningMsg: (it.qty || 1) > maxStock ? `警告: 在庫不足 (現在庫: ${maxStock})` : ''
+          unit: it.unit || product?.unit || 'pcs',
+          unitPrice: it.unitPrice !== undefined ? it.unitPrice : (product?.invoicePrice || 0),
+          weight: it.weight !== undefined ? it.weight : (product?.weight || 0.03),
+          hsCode: it.hsCode || product?.hsCode || '3002.90',
+          countryOfOrigin: it.countryOfOrigin || product?.countryOfOrigin || 'South Korea'
         };
       });
       setItems(mappedItems);
     }
   };
 
-  // Handle warehouse changes (refresh available lots for all lines)
+  // Handle warehouse changes
   const handleWarehouseChange = (wId: string) => {
     setWarehouseId(wId);
-    
-    // Recalculate available lots and FEFO choices for existing lines
-    setItems(prev => prev.map(item => {
-      if (!item.productId) return item;
-      const product = products.find(p => p.id === item.productId);
-      
-      const productLots = lots.filter(l => l.productId === item.productId && (!wId || !l.warehouseId || l.warehouseId === wId) && l.currentStock > 0);
-      const sortedLots = [...productLots].sort((a, b) => (a.expiryDate || '').localeCompare(b.expiryDate || ''));
-      
-      const chosenLot = sortedLots[0];
-      const maxStock = productLots.length > 0
-        ? productLots.reduce((sum, l) => sum + (l.currentStock || 0), 0)
-        : (product?.currentStock !== undefined ? product.currentStock : 99999);
-      const lotNo = chosenLot ? chosenLot.lotNo : (item.lotNo || product?.lotNo || 'LOT-TEMP');
-      const expiryDate = chosenLot ? chosenLot.expiryDate : (item.expiryDate || product?.expiryDate || '');
-      
-      const warningMsg = item.qty > maxStock ? `警告: 在庫不足 (倉庫内現在庫: ${maxStock})` : '';
-
-      return {
-        ...item,
-        lotNo,
-        expiryDate,
-        selectedLotMaxStock: maxStock,
-        availableLots: sortedLots,
-        warningMsg
-      };
-    }));
   };
 
   // Add clean row
@@ -217,10 +176,7 @@ export default function ShipmentAllocation({
         unitPrice: 0,
         weight: 0.03,
         hsCode: '',
-        countryOfOrigin: '',
-        availableLots: [],
-        selectedLotMaxStock: 99999,
-        warningMsg: ''
+        countryOfOrigin: 'South Korea'
       }
     ]);
   };
@@ -230,28 +186,13 @@ export default function ShipmentAllocation({
     setItems(prev => prev.filter(item => item.id !== id));
   };
 
-  // Handle product select on item row (Implements FEFO)
+  // Handle product select on item row
   const handleRowProductSelect = (id: string, prodId: string) => {
     const product = products.find(p => p.id === prodId);
     if (!product) return;
 
-    // FEFO: Get all lots for this product in current warehouse, sort by expiry date asc
-    const productLots = lots.filter(l => l.productId === prodId && (!warehouseId || !l.warehouseId || l.warehouseId === warehouseId) && l.currentStock > 0);
-    const sortedLots = [...productLots].sort((a, b) => (a.expiryDate || '').localeCompare(b.expiryDate || ''));
-    
-    // Choose the oldest lot first
-    const chosenLot = sortedLots[0];
-    const lotNo = chosenLot ? chosenLot.lotNo : (product.lotNo || 'LOT-TEMP');
-    const expiryDate = chosenLot ? chosenLot.expiryDate : (product.expiryDate || '');
-    const maxStock = productLots.length > 0
-      ? productLots.reduce((sum, l) => sum + (l.currentStock || 0), 0)
-      : (product.currentStock !== undefined ? product.currentStock : 99999);
-
     setItems(prev => prev.map(item => {
       if (item.id !== id) return item;
-
-      const qty = item.qty || 1;
-      const warningMsg = qty > maxStock ? `警告: 在庫不足 (現在庫: ${maxStock})` : '';
 
       return {
         ...item,
@@ -259,73 +200,37 @@ export default function ShipmentAllocation({
         sku: product.sku || '',
         nameJa: product.nameJa || '',
         nameEn: product.nameEn || '',
-        lotNo: lotNo || '',
-        expiryDate: expiryDate || '',
+        lotNo: item.lotNo || product.lotNo || '',
+        expiryDate: item.expiryDate || product.expiryDate || '',
         unit: product.unit || 'pcs',
         unitPrice: product.invoicePrice || 0,
         weight: product.weight || 0.03,
         hsCode: product.hsCode || '3002.90',
-        countryOfOrigin: product.countryOfOrigin || 'South Korea',
-        availableLots: sortedLots,
-        selectedLotMaxStock: maxStock,
-        warningMsg
+        countryOfOrigin: product.countryOfOrigin || 'South Korea'
       };
     }));
   };
 
-  // Handle lot changes manually on item row
-  const handleRowLotSelect = (id: string, lotNum: string) => {
+  // Handle field changes manually on item row
+  const handleItemFieldChange = (id: string, field: string, value: any) => {
     setItems(prev => prev.map(item => {
       if (item.id !== id) return item;
-
-      // Find lot details
-      const chosenLot = item.availableLots.find(l => l.lotNo === lotNum);
-      const expiryDate = chosenLot ? chosenLot.expiryDate : item.expiryDate;
-      const maxStock = chosenLot ? chosenLot.currentStock : item.selectedLotMaxStock;
-      
-      const qty = item.qty || 1;
-      const warningMsg = qty > maxStock ? `警告: 在庫不足 (このロットの現在庫: ${maxStock})` : '';
-
       return {
         ...item,
-        lotNo: lotNum,
-        expiryDate,
-        warningMsg
+        [field]: value
       };
     }));
   };
 
   // Update quantity on item row
   const handleRowQtyChange = (id: string, qty: number) => {
-    setItems(prev => prev.map(item => {
-      if (item.id !== id) return item;
-
-      const cleanQty = qty < 1 ? 1 : qty;
-      const maxStock = item.selectedLotMaxStock;
-      
-      const isUnderExp = false; // check if expired
-      let warningMsg = '';
-      if (cleanQty > maxStock) {
-        warningMsg = `警告: 在庫不足 (倉庫内現在庫: ${maxStock})`;
-      }
-
-      return {
-        ...item,
-        qty: cleanQty,
-        warningMsg
-      };
-    }));
+    const cleanQty = qty < 1 ? 1 : qty;
+    handleItemFieldChange(id, 'qty', cleanQty);
   };
 
   // Update price manually on item row
   const handleRowPriceChange = (id: string, price: number) => {
-    setItems(prev => prev.map(item => {
-      if (item.id !== id) return item;
-      return {
-        ...item,
-        unitPrice: price < 0 ? 0 : price
-      };
-    }));
+    handleItemFieldChange(id, 'unitPrice', price < 0 ? 0 : price);
   };
 
   // Calculations
@@ -334,7 +239,6 @@ export default function ShipmentAllocation({
   const totalItemsAmount = items.reduce((acc, item) => acc + ((item.qty || 0) * (item.unitPrice || 0)), 0);
   const totalInvoiceAmount = totalItemsAmount + shippingCost + insurance + otherCharges;
 
-  const hasWarnings = items.some(item => item.warningMsg.length > 0);
   const hasNoItems = items.length === 0 || items.some(item => !item.productId);
 
   // Submit allocation
@@ -362,13 +266,8 @@ export default function ShipmentAllocation({
       return;
     }
 
-    if (status === 'CONFIRMED' && hasWarnings) {
-      alert('在庫不足のアラートが出ている状態では、発送確定できません。数量を現在庫以下に変更するか、下書き保存をご利用ください。');
-      return;
-    }
-
     const conf = status === 'CONFIRMED' 
-      ? window.confirm('この発送を【確定】してよろしいですか？\n確定すると即座に倉庫在庫から減算され、商用インボイス (PDF) が自動作成・ダウンロードされます。')
+      ? window.confirm('この発送を【確定】してよろしいですか？\n確定すると商用インボイス (PDF) が自動作成・ダウンロードされます。')
       : true;
 
     if (!conf) return;
@@ -772,27 +671,28 @@ export default function ShipmentAllocation({
                         />
                       </div>
 
-                      {/* Lot number selector */}
+                      {/* Lot number */}
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">入荷元 / 変更</label>
-                        {item.availableLots.length === 0 ? (
-                          <input
-                            type="text"
-                            value={item.lotNo}
-                            disabled
-                            className="w-full border border-slate-200 bg-slate-100 rounded px-2 py-1 text-xs font-mono font-bold"
-                          />
-                        ) : (
-                          <select
-                            value={item.lotNo}
-                            onChange={(e) => handleRowLotSelect(item.id, e.target.value)}
-                            className="w-full border border-slate-200 rounded px-2 py-1 text-xs font-mono font-bold bg-white"
-                          >
-                            {item.availableLots.map(l => (
-                              <option key={l.id} value={l.lotNo}>{l.lotNo} (残: {l.currentStock})</option>
-                            ))}
-                          </select>
-                        )}
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">ロット番号</label>
+                        <input
+                          type="text"
+                          value={item.lotNo}
+                          onChange={(e) => handleItemFieldChange(item.id, 'lotNo', e.target.value)}
+                          placeholder="Lot No."
+                          className="w-full border border-slate-200 rounded px-2 py-1 text-xs font-mono font-bold bg-white focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+
+                      {/* Expiry Date */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">有効期限</label>
+                        <input
+                          type="text"
+                          value={item.expiryDate}
+                          onChange={(e) => handleItemFieldChange(item.id, 'expiryDate', e.target.value)}
+                          placeholder="YYYY-MM-DD"
+                          className="w-full border border-slate-200 rounded px-2 py-1 text-xs font-mono bg-white focus:outline-none focus:border-blue-500"
+                        />
                       </div>
 
                       {/* Quantity */}
@@ -839,14 +739,6 @@ export default function ShipmentAllocation({
                       </div>
 
                     </div>
-
-                    {/* Stock limit warning message */}
-                    {item.warningMsg && (
-                      <div className="text-xs font-bold text-red-600 bg-red-50 px-3 py-1 rounded border border-red-100 flex items-center gap-1.5">
-                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        <span>{item.warningMsg}</span>
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>
@@ -960,13 +852,6 @@ export default function ShipmentAllocation({
                 <span>発送確定・発行</span>
               </button>
             </div>
-
-            {hasWarnings && (
-              <div className="text-[10px] text-red-700 font-semibold bg-red-50 p-3 rounded border border-red-100 leading-relaxed flex items-start gap-1">
-                <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-red-600 mt-0.5" />
-                <span>在庫数が不足しています。発送確定するには、数量を現在庫以下に減らすか、入庫画面で新しい在庫を登録してください。</span>
-              </div>
-            )}
           </div>
 
         </div>

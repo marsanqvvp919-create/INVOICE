@@ -32,7 +32,7 @@ export default function Sidebar({
   isOpen = false,
   onClose
 }: SidebarProps) {
-  const masterTabIds = ['clinics', 'products', 'warehouses', 'suppliers'];
+  const masterTabIds = ['clinics', 'products', 'warehouses'];
   const [isMasterOpen, setIsMasterOpen] = useState(() => masterTabIds.includes(activeTab));
 
   useEffect(() => {
@@ -48,17 +48,14 @@ export default function Sidebar({
   
   const mainMenuItems = [
     { id: 'dashboard', label: 'ダッシュボード', icon: LayoutDashboard },
-    { id: 'bulk-allocation', label: '複数クリニック一括発送', icon: Layers, badge: '一括' },
-    { id: 'shipments', label: '発送履歴・帳票管理', icon: History },
-    { id: 'stock-input', label: '在庫入庫登録・履歴', icon: PackagePlus },
-    { id: 'stock-management', label: '拠点在庫一元管理', icon: Boxes },
+    { id: 'bulk-allocation', label: 'インボイス作成・一括配分', icon: Layers, badge: '一括' },
+    { id: 'shipments', label: 'インボイス履歴・PDF管理', icon: History },
   ];
 
   const masterMenuItems = [
     { id: 'clinics', label: 'クリニックマスタ', icon: Hospital },
-    { id: 'products', label: '製剤マスタ', icon: Package },
+    { id: 'products', label: '製剤・商品マスタ', icon: Package },
     { id: 'warehouses', label: '発送元倉庫マスタ', icon: Warehouse },
-    { id: 'suppliers', label: '入荷元マスタ', icon: Truck },
   ];
 
   const otherMenuItems = [
@@ -93,9 +90,9 @@ export default function Sidebar({
             <div className="leading-tight min-w-0">
               <h1 className="text-white font-extrabold text-sm tracking-tight flex items-center gap-1.5 whitespace-nowrap">
                 <span>メディフロー</span>
-                <span className="text-[10px] font-mono text-blue-400 font-bold bg-blue-500/10 border border-blue-500/20 px-1 py-0.2 rounded shrink-0">PRO</span>
+                <span className="text-[10px] font-mono text-blue-400 font-bold bg-blue-500/10 border border-blue-500/20 px-1 py-0.2 rounded shrink-0">INVOICE</span>
               </h1>
-              <p className="text-slate-400 text-[9.5px] font-semibold tracking-wider mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis">発送・在庫統合管理OS</p>
+              <p className="text-slate-400 text-[9.5px] font-semibold tracking-wider mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis">インボイス・帳票作成システム</p>
             </div>
           </div>
           

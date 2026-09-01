@@ -419,189 +419,27 @@ export default function App() {
     return `${prefix}${cleanDate}-${seq}`;
   };
 
-  // 4. Submit Single Shipment Handler
+  // 4. Submit Single Shipment / Invoice Handler
   const handleSubmitShipment = async (payload: any, status: 'DRAFT' | 'CONFIRMED'): Promise<{ invoiceNo: string; shipment: Shipment }> => {
     const invoiceNo = await generateInvoiceNo(payload.date);
-    
-    // Read lots outside the transaction
-    const lotQuerySnap = await getDocs(collection(db, 'inventoryLots'));
     let createdShipment: Shipment | null = null;
     
     await runTransaction(db, async (transaction) => {
       const warehouseRef = payload.warehouseId ? doc(db, 'warehouses', payload.warehouseId) : null;
       const clinicRef = payload.clinicId ? doc(db, 'clinics', payload.clinicId) : null;
 
-      // 1. READ PHASE
       const warehouseSnap = warehouseRef ? await transaction.get(warehouseRef) : null;
       const clinicSnap = clinicRef ? await transaction.get(clinicRef) : null;
 
-      const productSnaps: Record<string, any> = {};
-      const lotSnaps: Record<string, any> = {};
-
-      if (status === 'CONFIRMED') {
-        if (!warehouseSnap || !warehouseSnap.exists()) {
-          throw new Error('発送元倉庫を選択してください');
-        }
-        if (!clinicSnap || !clinicSnap.exists()) {
-          throw new Error('発送先クリニックを選択してください');
-        }
-
-        for (const item of payload.items) {
-          const productRef = doc(db, 'products', item.productId);
-          if (!productSnaps[item.productId]) {
-            productSnaps[item.productId] = await transaction.get(productRef);
-          }
-
-          // Find specific lot with fallback matching
-          let lotDocId = '';
-          lotQuerySnap.forEach(ldoc => {
-            const ldata = ldoc.data() as InventoryLot;
-            if (ldata.productId === item.productId && 
-                ldata.lotNo === item.lotNo &&
-                (!ldata.warehouseId || ldata.warehouseId === payload.warehouseId)) {
-              lotDocId = ldoc.id;
-            }
-          });
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId && 
-                  (!ldata.warehouseId || ldata.warehouseId === payload.warehouseId)) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-
-          if (lotDocId && !lotSnaps[lotDocId]) {
-            lotSnaps[lotDocId] = await transaction.get(doc(db, 'inventoryLots', lotDocId));
-          }
-        }
-      }
-
-      // If status is CONFIRMED, execute stock reduction
-      if (status === 'CONFIRMED') {
-        const itemsUpdates: any[] = [];
-
-        for (const item of payload.items) {
-          const productSnap = productSnaps[item.productId];
-          if (!productSnap || !productSnap.exists()) throw new Error(`製剤 ID ${item.productId} が見つかりません`);
-          const productData = productSnap.data() as Product;
-          const productStock = productData.currentStock || 0;
-
-          if (productStock < item.qty) {
-            throw new Error(`製剤「${productData.nameJa}」の在庫が不足しています (倉庫・マスター現在庫: ${productStock})`);
-          }
-
-          // Find specific lot with fallback matching
-          let lotDocId = '';
-          lotQuerySnap.forEach(ldoc => {
-            const ldata = ldoc.data() as InventoryLot;
-            if (ldata.productId === item.productId && 
-                ldata.lotNo === item.lotNo &&
-                (!ldata.warehouseId || ldata.warehouseId === payload.warehouseId)) {
-              lotDocId = ldoc.id;
-            }
-          });
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId && 
-                  (!ldata.warehouseId || ldata.warehouseId === payload.warehouseId)) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-
-          let lotStock = 0;
-          if (lotDocId) {
-            const lotSnap = lotSnaps[lotDocId];
-            if (lotSnap && lotSnap.exists()) {
-              lotStock = (lotSnap.data() as InventoryLot).currentStock || 0;
-            }
-          }
-
-          itemsUpdates.push({
-            item,
-            productRef: doc(db, 'products', item.productId),
-            productData,
-            lotDocId,
-            lotStock,
-            newProductStock: Math.max(0, productStock - item.qty)
-          });
-        }
-
-        // 2. WRITE PHASE
-        for (const update of itemsUpdates) {
-          if (update.lotDocId) {
-            // Subtract lot stock
-            const lotRef = doc(db, 'inventoryLots', update.lotDocId);
-            transaction.update(lotRef, {
-              currentStock: Math.max(0, update.lotStock - update.item.qty)
-            });
-          } else {
-            // Auto-create lot record if no lot existed
-            const newLotRef = doc(collection(db, 'inventoryLots'));
-            transaction.set(newLotRef, {
-              productId: update.item.productId,
-              warehouseId: payload.warehouseId,
-              lotNo: update.item.lotNo || 'LOT-TEMP',
-              expiryDate: update.item.expiryDate || '',
-              currentStock: Math.max(0, update.productData.currentStock - update.item.qty),
-              updatedAt: new Date().toISOString()
-            });
-          }
-
-          // Subtract product master stock
-          transaction.update(update.productRef, {
-            currentStock: update.newProductStock
-          });
-
-          // Write OUT stock transaction
-          const txRef = doc(collection(db, 'inventoryTransactions'));
-          transaction.set(txRef, {
-            date: new Date().toISOString().substring(0, 19).replace('T', ' '),
-            type: 'OUT',
-            productId: update.item.productId,
-            productNameJa: update.productData.nameJa,
-            sku: update.productData.sku,
-            warehouseId: payload.warehouseId,
-            warehouseName: warehouseSnap?.exists() ? warehouseSnap.data().name : '未指定倉庫',
-            lotNo: update.item.lotNo,
-            quantity: -update.item.qty,
-            beforeQty: update.productData.currentStock,
-            afterQty: update.newProductStock,
-            user: currentUser.name,
-            notes: `発送インボイス出庫: ${invoiceNo}`
-          });
-        }
-      }
-
-      // Save Shipment record
-      const shipmentRef = doc(collection(db, 'shipments'));
       const warehouseSnapshot: Partial<Warehouse> = warehouseSnap && warehouseSnap.exists() 
         ? (warehouseSnap.data() as Warehouse) 
-        : { id: payload.warehouseId || '', name: '未指定倉庫' };
+        : { id: payload.warehouseId || '', name: '指定発送元', nameEn: 'Designated Warehouse' };
 
       const clinicSnapshot: Partial<Clinic> = clinicSnap && clinicSnap.exists() 
         ? (clinicSnap.data() as Clinic) 
-        : { id: payload.clinicId || '', name: '未指定クリニック', nameEn: 'Unspecified Clinic' };
+        : { id: payload.clinicId || '', name: '指定クリニック', nameEn: 'Designated Clinic' };
 
+      const shipmentRef = doc(collection(db, 'shipments'));
       const shipmentData: Shipment = {
         id: shipmentRef.id,
         ...payload,
@@ -611,11 +449,13 @@ export default function App() {
         clinicSnapshot,
         createdById: currentUser.uid,
         createdByName: currentUser.name,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
         history: [{
           date: new Date().toISOString().substring(0, 16).replace('T', ' '),
           user: currentUser.name,
           action: 'CREATED',
-          detail: `インボイス ${status} を作成`
+          detail: `インボイス ${status === 'CONFIRMED' ? '確定' : '下書き'} を作成`
         }]
       };
 
@@ -627,13 +467,10 @@ export default function App() {
     return { invoiceNo, shipment: createdShipment! };
   };
 
-  // 5. Submit Bulk Shipment (Multiple Clinics in One Batch)
+  // 5. Submit Bulk Shipment (Multiple Clinics in One Batch - Invoice Generator)
   const handleBulkShipmentsSubmit = async (shipmentsPayloads: any[]): Promise<Shipment[]> => {
     const createdList: Shipment[] = [];
     
-    // Read lots outside the transactions
-    const lotQuerySnap = await getDocs(collection(db, 'inventoryLots'));
-
     // Fetch all shipments once to count existing ones and avoid race conditions / stale cache
     const shipmentsSnap = await getDocs(collection(db, 'shipments'));
     const allExistingShipments = shipmentsSnap.docs.map(d => d.data() as Shipment);
@@ -657,155 +494,26 @@ export default function App() {
       const invoiceNo = `${prefix}${cleanDate}-${seq}`;
       
       const newShipment = await runTransaction(db, async (transaction) => {
-        const warehouseRef = doc(db, 'warehouses', payload.warehouseId);
-        const clinicRef = doc(db, 'clinics', payload.clinicId);
+        const warehouseRef = payload.warehouseId ? doc(db, 'warehouses', payload.warehouseId) : null;
+        const clinicRef拼 = payload.clinicId ? doc(db, 'clinics', payload.clinicId) : null;
 
-        // 1. READ PHASE
-        const warehouseSnap = await transaction.get(warehouseRef);
-        const clinicSnap = await transaction.get(clinicRef);
+        const warehouseSnap = warehouseRef ? await transaction.get(warehouseRef) : null;
+        const clinicSnap = clinicRef拼 ? await transaction.get(clinicRef拼) : null;
 
-        const productSnaps: Record<string, any> = {};
-        const lotSnaps: Record<string, any> = {};
+        const warehouseSnapshot = warehouseSnap && warehouseSnap.exists() 
+          ? warehouseSnap.data() 
+          : { id: payload.warehouseId || '', name: '指定倉庫', nameEn: 'Main Warehouse' };
 
-        for (const item of payload.items) {
-          const productRef = doc(db, 'products', item.productId);
-          if (!productSnaps[item.productId]) {
-            productSnaps[item.productId] = await transaction.get(productRef);
-          }
-
-          // Find specific lot
-          let lotDocId = '';
-          lotQuerySnap.forEach(ldoc => {
-            const ldata = ldoc.data() as InventoryLot;
-            if (ldata.productId === item.productId && 
-                ldata.lotNo === item.lotNo && 
-                (!ldata.warehouseId || ldata.warehouseId === payload.warehouseId)) {
-              lotDocId = ldoc.id;
-            }
-          });
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId && 
-                  (!ldata.warehouseId || ldata.warehouseId === payload.warehouseId)) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-
-          if (lotDocId && !lotSnaps[lotDocId]) {
-            lotSnaps[lotDocId] = await transaction.get(doc(db, 'inventoryLots', lotDocId));
-          }
-        }
-
-        if (!warehouseSnap.exists() || !clinicSnap.exists()) {
-          throw new Error('倉庫またはクリニックが正しく検出できません');
-        }
-
-        const itemsUpdates: any[] = [];
-
-        // Validate and prepare updates
-        for (const item of payload.items) {
-          const productSnap = productSnaps[item.productId];
-          if (!productSnap || !productSnap.exists()) {
-            throw new Error(`製剤 ${item.productId} がマスタにありません`);
-          }
-          const productData = productSnap.data() as Product;
-
-          // Find specific lot ID
-          let lotDocId = '';
-          lotQuerySnap.forEach(ldoc => {
-            const ldata = ldoc.data() as InventoryLot;
-            if (ldata.productId === item.productId && 
-                ldata.lotNo === item.lotNo && 
-                (!ldata.warehouseId || ldata.warehouseId === payload.warehouseId)) {
-              lotDocId = ldoc.id;
-            }
-          });
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId && 
-                  (!ldata.warehouseId || ldata.warehouseId === payload.warehouseId)) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-
-          let lotStock = 0;
-          if (lotDocId) {
-            const lotSnap = lotSnaps[lotDocId];
-            if (lotSnap && lotSnap.exists()) {
-              lotStock = (lotSnap.data() as InventoryLot).currentStock || 0;
-            }
-          }
-
-          if (!lotDocId || lotStock < item.qty) {
-            throw new Error(`一括振り分け処理中：${productData.nameJa} (ロット ${item.lotNo}) の在庫が不足しています`);
-          }
-
-          itemsUpdates.push({
-            item,
-            productRef: doc(db, 'products', item.productId),
-            productData,
-            lotDocId,
-            lotStock,
-            newProductStock: (productData.currentStock || 0) - item.qty
-          });
-        }
-
-        // 2. WRITE PHASE
-        for (const update of itemsUpdates) {
-          // Reduce lot stock
-          transaction.update(doc(db, 'inventoryLots', update.lotDocId), {
-            currentStock: update.lotStock - update.item.qty
-          });
-
-          // Reduce product stock
-          transaction.update(update.productRef, {
-            currentStock: update.newProductStock
-          });
-
-          // Write inventory transaction
-          transaction.set(doc(collection(db, 'inventoryTransactions')), {
-            date: new Date().toISOString().substring(0, 19).replace('T', ' '),
-            type: 'OUT',
-            productId: update.item.productId,
-            productNameJa: update.productData.nameJa,
-            sku: update.productData.sku,
-            warehouseId: payload.warehouseId,
-            warehouseName: warehouseSnap.data().name,
-            lotNo: update.item.lotNo,
-            quantity: -update.item.qty,
-            beforeQty: update.productData.currentStock,
-            afterQty: update.newProductStock,
-            user: currentUser.name,
-            notes: `一括振り分けインボイス出庫: ${invoiceNo}`
-          });
-        }
+        const clinicSnapshot = clinicSnap && clinicSnap.exists()
+          ? clinicSnap.data()
+          : { id: payload.clinicId || '', name: '指定クリニック', nameEn: 'Designated Clinic' };
 
         const newShipmentData = {
           ...payload,
           invoiceNo,
           status: 'CONFIRMED' as const,
-          warehouseSnapshot: warehouseSnap.data(),
-          clinicSnapshot: clinicSnap.data(),
+          warehouseSnapshot,
+          clinicSnapshot,
           createdById: currentUser.uid,
           createdByName: currentUser.name,
           createdAt: new Date().toISOString(),
@@ -814,14 +522,14 @@ export default function App() {
             date: new Date().toISOString().substring(0, 16).replace('T', ' '),
             user: currentUser.name,
             action: 'CREATED_BULK',
-            detail: '一括振り分けシステムによる一括確定'
+            detail: '一括配分によるインボイス作成・確定'
           }]
         };
 
-        const newDocRef = doc(collection(db, 'shipments'));
-        transaction.set(newDocRef, newShipmentData);
+        const newDocRef拼 = doc(collection(db, 'shipments'));
+        transaction.set(newDocRef拼, newShipmentData);
         
-        return { id: newDocRef.id, ...newShipmentData } as Shipment;
+        return { id: newDocRef拼.id, ...newShipmentData } as Shipment;
       });
 
       createdList.push(newShipment);
@@ -831,259 +539,17 @@ export default function App() {
     return createdList;
   };
 
-  // 6. Update Shipment Status (DRAFT -> CONFIRMED, or Rollback Cancel)
+  // 6. Update Shipment Status (DRAFT -> CONFIRMED, SHIPPED, DELIVERED, CANCELLED)
   const handleUpdateShipmentStatus = async (id: string, status: Shipment['status'], trackingNo?: string) => {
     const shipmentRef = doc(db, 'shipments', id);
-    
-    // Read lots outside the transaction
-    const lotQuerySnap = await getDocs(collection(db, 'inventoryLots'));
 
     await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(shipmentRef);
-      if (!snap.exists()) throw new Error('指定 of 発送データが見つかりません');
+      if (!snap.exists()) throw new Error('指定の発送データが見つかりません');
       const s = snap.data() as Shipment;
 
       const beforeStatus = s.status;
-      if (beforeStatus === status) return;
-
-      // 1. READ PHASE
-      const productSnaps: Record<string, any> = {};
-      const lotSnaps: Record<string, any> = {};
-
-      if (beforeStatus === 'DRAFT' && status === 'CONFIRMED') {
-        for (const item of s.items) {
-          const productRef = doc(db, 'products', item.productId);
-          if (!productSnaps[item.productId]) {
-            productSnaps[item.productId] = await transaction.get(productRef);
-          }
-
-          let lotDocId = '';
-          lotQuerySnap.forEach(ldoc => {
-            const ldata = ldoc.data() as InventoryLot;
-            if (ldata.productId === item.productId && 
-                ldata.lotNo === item.lotNo &&
-                (!ldata.warehouseId || ldata.warehouseId === s.warehouseId)) {
-              lotDocId = ldoc.id;
-            }
-          });
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId && 
-                  (!ldata.warehouseId || ldata.warehouseId === s.warehouseId)) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-
-          if (lotDocId && !lotSnaps[lotDocId]) {
-            lotSnaps[lotDocId] = await transaction.get(doc(db, 'inventoryLots', lotDocId));
-          }
-        }
-      }
-
-      if ((beforeStatus === 'CONFIRMED' || beforeStatus === 'SHIPPED') && status === 'CANCELLED') {
-        for (const item of s.items) {
-          const productRef = doc(db, 'products', item.productId);
-          if (!productSnaps[item.productId]) {
-            productSnaps[item.productId] = await transaction.get(productRef);
-          }
-
-          let lotDocId = '';
-          lotQuerySnap.forEach(ldoc => {
-            const ldata = ldoc.data() as InventoryLot;
-            if (ldata.productId === item.productId && 
-                ldata.lotNo === item.lotNo &&
-                (!ldata.warehouseId || ldata.warehouseId === s.warehouseId)) {
-              lotDocId = ldoc.id;
-            }
-          });
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-
-          if (lotDocId && !lotSnaps[lotDocId]) {
-            lotSnaps[lotDocId] = await transaction.get(doc(db, 'inventoryLots', lotDocId));
-          }
-        }
-      }
-
-      // 2. VALIDATION & WRITE PHASE
-      // Case A: CONFIRMING from DRAFT status
-      if (beforeStatus === 'DRAFT' && status === 'CONFIRMED') {
-        const itemsUpdates: any[] = [];
-
-        for (const item of s.items) {
-          const productSnap = productSnaps[item.productId];
-          if (!productSnap || !productSnap.exists()) throw new Error(`製剤 ${item.nameJa} がマスタにありません`);
-          const productData = productSnap.data() as Product;
-
-          let lotDocId = '';
-          lotQuerySnap.forEach(ldoc => {
-            const ldata = ldoc.data() as InventoryLot;
-            if (ldata.productId === item.productId && 
-                ldata.lotNo === item.lotNo &&
-                (!ldata.warehouseId || ldata.warehouseId === s.warehouseId)) {
-              lotDocId = ldoc.id;
-            }
-          });
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId && 
-                  (!ldata.warehouseId || ldata.warehouseId === s.warehouseId)) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-          if (!lotDocId) {
-            lotQuerySnap.forEach(ldoc => {
-              const ldata = ldoc.data() as InventoryLot;
-              if (ldata.productId === item.productId) {
-                lotDocId = ldoc.id;
-              }
-            });
-          }
-
-          let lotStock = 0;
-          if (lotDocId) {
-            const lotSnap = lotSnaps[lotDocId];
-            if (lotSnap && lotSnap.exists()) {
-              lotStock = (lotSnap.data() as InventoryLot).currentStock || 0;
-            }
-          }
-
-          if (!lotDocId || lotStock < item.qty) {
-            throw new Error(`製剤 ${item.nameJa} (ロット ${item.lotNo}) の在庫が不足しているため、下書きから確定に変更できません。`);
-          }
-
-          itemsUpdates.push({
-            item,
-            productRef: doc(db, 'products', item.productId),
-            productData,
-            lotDocId,
-            lotStock,
-            newProductStock: (productData.currentStock || 0) - item.qty
-          });
-        }
-
-        // Apply writes for Case A
-        for (const update of itemsUpdates) {
-          transaction.update(doc(db, 'inventoryLots', update.lotDocId), {
-            currentStock: update.lotStock - update.item.qty
-          });
-
-          transaction.update(update.productRef, {
-            currentStock: update.newProductStock
-          });
-
-          transaction.set(doc(collection(db, 'inventoryTransactions')), {
-            date: new Date().toISOString().substring(0, 19).replace('T', ' '),
-            type: 'OUT',
-            productId: update.item.productId,
-            productNameJa: update.productData.nameJa,
-            sku: update.productData.sku,
-            warehouseId: s.warehouseId,
-            warehouseName: s.warehouseSnapshot?.name || '不明倉庫',
-            lotNo: update.item.lotNo,
-            quantity: -update.item.qty,
-            beforeQty: update.productData.currentStock,
-            afterQty: update.newProductStock,
-            user: currentUser.name,
-            notes: `下書き確定化による搬出: ${s.invoiceNo}`
-          });
-        }
-      }
-
-      // Case B: CANCELLING an already CONFIRMED/SHIPPED shipment (Rollback quantities)
-      if ((beforeStatus === 'CONFIRMED' || beforeStatus === 'SHIPPED') && status === 'CANCELLED') {
-        const itemsUpdates: any[] = [];
-
-        for (const item of s.items) {
-          const productSnap = productSnaps[item.productId];
-          if (!productSnap || !productSnap.exists()) continue;
-          const productData = productSnap.data() as Product;
-
-          let lotDocId = '';
-          lotQuerySnap.forEach(ldoc => {
-            const ldata = ldoc.data() as InventoryLot;
-            if (ldata.productId === item.productId && 
-                ldata.warehouseId === s.warehouseId && 
-                ldata.lotNo === item.lotNo) {
-              lotDocId = ldoc.id;
-            }
-          });
-
-          let lotStock = 0;
-          if (lotDocId) {
-            const lotSnap = lotSnaps[lotDocId];
-            if (lotSnap && lotSnap.exists()) {
-              lotStock = (lotSnap.data() as InventoryLot).currentStock || 0;
-            }
-          }
-
-          itemsUpdates.push({
-            item,
-            productRef: doc(db, 'products', item.productId),
-            productData,
-            lotDocId,
-            lotStock,
-            newProductStock: (productData.currentStock || 0) + item.qty
-          });
-        }
-
-        // Apply writes for Case B
-        for (const update of itemsUpdates) {
-          transaction.update(update.productRef, {
-            currentStock: update.newProductStock
-          });
-
-          if (update.lotDocId) {
-            transaction.update(doc(db, 'inventoryLots', update.lotDocId), {
-              currentStock: update.lotStock + update.item.qty
-            });
-          } else {
-            // Re-create the lot if it was deleted
-            const lotRef = doc(collection(db, 'inventoryLots'));
-            transaction.set(lotRef, {
-              productId: update.item.productId,
-              warehouseId: s.warehouseId,
-              lotNo: update.item.lotNo,
-              expiryDate: update.item.expiryDate || '',
-              currentStock: update.item.qty
-            });
-          }
-
-          transaction.set(doc(collection(db, 'inventoryTransactions')), {
-            date: new Date().toISOString().substring(0, 19).replace('T', ' '),
-            type: 'ADJ',
-            productId: update.item.productId,
-            productNameJa: update.productData.nameJa,
-            sku: update.productData.sku,
-            warehouseId: s.warehouseId,
-            warehouseName: s.warehouseSnapshot?.name || '不明倉庫',
-            lotNo: update.item.lotNo,
-            quantity: update.item.qty,
-            beforeQty: update.productData.currentStock,
-            afterQty: update.newProductStock,
-            user: currentUser.name,
-            notes: `発送キャンセルに伴う在庫差し戻し: ${s.invoiceNo}`
-          });
-        }
-      }
+      if (beforeStatus === status && (trackingNo === undefined || trackingNo === s.trackingNo)) return;
 
       const updatedHistory = [
         ...(s.history || []),
@@ -1097,6 +563,7 @@ export default function App() {
 
       const updates: any = {
         status,
+        updatedAt: new Date().toISOString(),
         history: updatedHistory
       };
 
@@ -1219,14 +686,34 @@ export default function App() {
   const handleUpdateProduct = async (id: string, updated: Partial<Product>) => {
     const docRef = doc(db, 'products', id);
     const oldProduct = products.find(p => p.id === id);
-    
-    await updateDoc(docRef, updated);
+
+    // Sanitize updated object to avoid any undefined or NaN fields for Firestore
+    const cleanUpdated: Record<string, any> = {};
+    for (const [key, value] of Object.entries(updated)) {
+      if (value !== undefined) {
+        if (typeof value === 'number') {
+          cleanUpdated[key] = isNaN(value) ? 0 : value;
+        } else {
+          cleanUpdated[key] = value;
+        }
+      }
+    }
+    cleanUpdated.updatedAt = new Date().toISOString();
+
+    await setDoc(docRef, cleanUpdated, { merge: true });
 
     if (oldProduct) {
       const defaultWId = settings.defaultWarehouseId || warehouses.find(w => w.isDefault)?.id || warehouses[0]?.id || '';
       
-      const stockDiff = (updated.currentStock ?? oldProduct.currentStock) - (oldProduct.currentStock || 0);
-      const newLotNo = (updated.lotNo || oldProduct.lotNo || 'LOT-TEMP').toUpperCase();
+      const newStockVal = typeof updated.currentStock === 'number' && !isNaN(updated.currentStock) 
+        ? updated.currentStock 
+        : (oldProduct.currentStock || 0);
+      const oldStockVal = typeof oldProduct.currentStock === 'number' && !isNaN(oldProduct.currentStock) 
+        ? oldProduct.currentStock 
+        : 0;
+      const stockDiff = newStockVal - oldStockVal;
+
+      const newLotNo = ((updated.lotNo || oldProduct.lotNo || 'LOT-TEMP') as string).toUpperCase();
       const newExpiry = updated.expiryDate || oldProduct.expiryDate || '';
 
       if (stockDiff !== 0 || updated.lotNo !== oldProduct.lotNo || updated.expiryDate !== oldProduct.expiryDate) {
@@ -1239,25 +726,26 @@ export default function App() {
           const ldata = ldoc.data() as InventoryLot;
           if (ldata.productId === id && ldata.warehouseId === defaultWId) {
             targetLotDocId = ldoc.id;
-            targetLotCurrentStock = ldata.currentStock || 0;
+            targetLotCurrentStock = typeof ldata.currentStock === 'number' && !isNaN(ldata.currentStock) ? ldata.currentStock : 0;
           }
         });
 
         if (targetLotDocId) {
           const lotRef = doc(db, 'inventoryLots', targetLotDocId);
-          await updateDoc(lotRef, {
+          const resultingLotStock = Math.max(0, targetLotCurrentStock + stockDiff);
+          await setDoc(lotRef, {
             lotNo: newLotNo,
             expiryDate: newExpiry,
-            currentStock: targetLotCurrentStock + stockDiff,
+            currentStock: resultingLotStock,
             updatedAt: new Date().toISOString()
-          });
-        } else {
+          }, { merge: true });
+        } else if (defaultWId) {
           await addDoc(collection(db, 'inventoryLots'), {
             productId: id,
             warehouseId: defaultWId,
             lotNo: newLotNo,
             expiryDate: newExpiry,
-            currentStock: updated.currentStock ?? oldProduct.currentStock ?? 0,
+            currentStock: Math.max(0, newStockVal),
             updatedAt: new Date().toISOString()
           });
         }
@@ -1268,15 +756,15 @@ export default function App() {
             date: new Date().toISOString().substring(0, 19).replace('T', ' '),
             type: 'ADJ',
             productId: id,
-            productNameJa: updated.nameJa || oldProduct.nameJa,
-            sku: updated.sku || oldProduct.sku,
+            productNameJa: updated.nameJa || oldProduct.nameJa || '',
+            sku: updated.sku || oldProduct.sku || '',
             warehouseId: defaultWId,
             warehouseName: warehouses.find(w => w.id === defaultWId)?.name || 'デフォルト倉庫',
             lotNo: newLotNo,
             expiryDate: newExpiry,
             quantity: stockDiff,
-            beforeQty: oldProduct.currentStock || 0,
-            afterQty: updated.currentStock ?? oldProduct.currentStock ?? 0,
+            beforeQty: oldStockVal,
+            afterQty: newStockVal,
             user: currentUser.name,
             notes: '製剤マスタ編集に伴う自動在庫調整（システム自動同期）',
             createdAt: new Date().toISOString()
@@ -1285,7 +773,7 @@ export default function App() {
       }
     }
 
-    await logAuditAction('PRODUCT_UPDATE', id, 'Modified fields', JSON.stringify(updated));
+    await logAuditAction('PRODUCT_UPDATE', id, 'Modified fields', JSON.stringify(cleanUpdated));
   };
 
   const handleAdjustLot = async (lotId: string, newStock: number, notes: string) => {
