@@ -150,8 +150,10 @@ export default function ClinicMaster({
       nameEn = name;
     }
 
+    const cleanDoctorNameEn = (formFields.doctorNameEn || '').replace(/^Dr\.?\s*/i, '').trim();
     const payload = {
       ...formFields,
+      doctorNameEn: cleanDoctorNameEn,
       clinicId,
       name,
       nameEn
@@ -311,7 +313,7 @@ export default function ClinicMaster({
           corporationName: rowObj['corporationName'] || '',
           contactPerson: rowObj['contactPerson'] || '',
           doctorName: rowObj['doctorName'] || '',
-          doctorNameEn: rowObj['doctorNameEn'] || '',
+          doctorNameEn: (rowObj['doctorNameEn'] || '').replace(/^Dr\.?\s*/i, '').trim(),
           zip: rowObj['zip'] || '',
           prefecture: rowObj['prefecture'] || '',
           city: rowObj['city'] || '',
@@ -625,13 +627,15 @@ export default function ClinicMaster({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">医師名 (英語表記) <span className="text-slate-400 font-normal">(インボイス記載用)</span></label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    医師名 (英語表記) <span className="text-slate-400 font-normal">(Dr.表記は不要)</span>
+                  </label>
                   <input
                     type="text"
                     value={formFields.doctorNameEn}
                     onChange={(e) => setFormFields(prev => ({ ...prev, doctorNameEn: e.target.value }))}
                     className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs focus:outline-none focus:border-blue-500"
-                    placeholder="Dr. Shigeru Sato"
+                    placeholder="Tetsu Asai (※Dr.は記載不要)"
                   />
                 </div>
 

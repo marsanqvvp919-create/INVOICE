@@ -28,7 +28,12 @@ import {
   FileCode,
   ExternalLink,
   PlusCircle,
-  Truck
+  Truck,
+  Edit3,
+  MapPin,
+  Phone,
+  UserCheck,
+  Info
 } from 'lucide-react';
 import { 
   Clinic, 
@@ -46,7 +51,7 @@ import {
 import { generateShipmentsZip, generateInvoicePDF } from '../lib/pdf';
 import { SAMPLE_CLINICS_MASTER, SAMPLE_PRODUCTS_MASTER } from '../data/sampleClinicProductData';
 import { db } from '../lib/firebase';
-import { collection, writeBatch, doc } from 'firebase/firestore';
+import { collection, writeBatch, doc, addDoc } from 'firebase/firestore';
 
 interface CsvInvoiceImporterProps {
   clinics: Clinic[];
@@ -55,6 +60,7 @@ interface CsvInvoiceImporterProps {
   settings: SystemSettings;
   onNavigateToShipments?: () => void;
   onRefreshMasters?: () => void;
+  onAddClinic?: (clinic: Omit<Clinic, 'id' | 'createdAt'>) => Promise<string | void>;
 }
 
 const DEFAULT_SAMPLE_CSV = `INVOICE DRIVE,出荷資料 0901,,,,,,,
@@ -152,7 +158,8 @@ export default function CsvInvoiceImporter({
   warehouses,
   settings,
   onNavigateToShipments,
-  onRefreshMasters
+  onRefreshMasters,
+  onAddClinic
 }: CsvInvoiceImporterProps) {
   // Input State
   const [inputMode, setInputMode] = useState<'upload' | 'paste'>('upload');
@@ -198,6 +205,35 @@ export default function CsvInvoiceImporter({
   const [isSavingDb, setIsSavingDb] = useState<boolean>(false);
   const [isSeedingMasters, setIsSeedingMasters] = useState<boolean>(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  // Manual Clinic Fill & Missing Clinic Resolution
+  const [isManualModalOpen, setIsManualModalOpen] = useState<boolean>(false);
+  const [manualTargetAlloc, setManualTargetAlloc] = useState<ParsedClinicAllocation | null>(null);
+  const [isConfirmMasterOpen, setIsConfirmMasterOpen] = useState<boolean>(false);
+  const [isSavingMaster, setIsSavingMaster] = useState<boolean>(false);
+
+  // Manual Fill Form State
+  const [manualForm, setManualForm] = useState<{
+    name: string;
+    nameEn: string;
+    addressEn: string;
+    doctorName: string;
+    doctorNameEn: string;
+    phone: string;
+    zip: string;
+    corporationName: string;
+    contactPerson: string;
+  }>({
+    name: '',
+    nameEn: '',
+    addressEn: '',
+    doctorName: '',
+    doctorNameEn: '',
+    phone: '',
+    zip: '',
+    corporationName: '',
+    contactPerson: ''
+  });
 
   // Preview Modal
   const [previewShipment, setPreviewShipment] = useState<Shipment | null>(null);
@@ -400,11 +436,199 @@ export default function CsvInvoiceImporter({
     );
   }, [parseResult, selectedAllocIds, activeWarehouse, settings, shippingDate, currency]);
 
+  // Open manual clinic fill modal
+  const handleOpenManualModal = (alloc: ParsedClinicAllocation) => {
+    setManualTargetAlloc(alloc);
+    
+    // Existing matched clinic or preset data
+    const existing = alloc.matchedClinic;
+    
+    // Auto-generate candidate nameEn if none
+    let defaultNameEn = existing?.nameEn || '';
+    if (!defaultNameEn) {
+      const hasAlpha = /[a-zA-Z]/.test(alloc.clinicNameCsv);
+      defaultNameEn = hasAlpha ? alloc.clinicNameCsv.toUpperCase() : alloc.clinicNameCsv;
+    }
+
+    // Auto candidate for doctorNameEn:
+    // If CSV Column B (csvIgnoredRecipient) has latin characters, suggest it (clean Dr.)
+    let defaultDocEn = existing?.doctorNameEn || alloc.doctorNameEnFromDb || '';
+    if (!defaultDocEn && alloc.csvIgnoredRecipient && /[a-zA-Z]/.test(alloc.csvIgnoredRecipient)) {
+      defaultDocEn = alloc.csvIgnoredRecipient.replace(/^Dr\.?\s*/i, '').trim();
+    }
+
+    setManualForm({
+      name: existing?.name || alloc.clinicNameCsv || '',
+      nameEn: defaultNameEn,
+      addressEn: existing?.addressEn || '',
+      doctorName: existing?.doctorName || alloc.doctorNameJaFromDb || (alloc.csvIgnoredRecipient && !/[a-zA-Z]/.test(alloc.csvIgnoredRecipient) ? alloc.csvIgnoredRecipient : ''),
+      doctorNameEn: defaultDocEn.replace(/^Dr\.?\s*/i, '').trim(),
+      phone: existing?.phone || '',
+      zip: existing?.zip || '',
+      corporationName: existing?.corporationName || '',
+      contactPerson: existing?.contactPerson || ''
+    });
+
+    setIsManualModalOpen(true);
+  };
+
+  // User clicked "Apply" in manual modal -> trigger confirm popup "Register to clinic master?"
+  const handlePromptConfirmMaster = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualForm.name.trim()) {
+      showToast('クリニック名（日本語）を入力してください。', 'error');
+      return;
+    }
+    if (!manualForm.nameEn.trim()) {
+      showToast('クリニック名（英語表記）を入力してください。', 'error');
+      return;
+    }
+    if (!manualForm.addressEn.trim()) {
+      showToast('英語住所（Address in English）を入力してください。', 'error');
+      return;
+    }
+    if (!manualForm.doctorNameEn.trim()) {
+      showToast('医師名（英語表記・Dr.不要）を入力してください。', 'error');
+      return;
+    }
+    if (!manualForm.phone.trim()) {
+      showToast('電話番号を入力してください。', 'error');
+      return;
+    }
+
+    // Open confirm popup
+    setIsConfirmMasterOpen(true);
+  };
+
+  // Final apply logic: either save to master (Firestore) or apply temporarily to this invoice
+  const handleApplyAndSaveClinic = async (saveToMaster: boolean) => {
+    if (!manualTargetAlloc) return;
+    
+    setIsSavingMaster(true);
+    try {
+      const cleanDoctorNameEn = (manualForm.doctorNameEn || '').replace(/^Dr\.?\s*/i, '').trim();
+      const targetClinicName = manualTargetAlloc.clinicNameCsv;
+
+      let resultingClinic: Clinic;
+
+      if (saveToMaster) {
+        // Save to Firestore clinics collection
+        const clinicId = `CLN-${Date.now().toString().slice(-6)}`;
+        const payload: Omit<Clinic, 'id'> = {
+          clinicId,
+          name: manualForm.name.trim() || targetClinicName,
+          nameEn: manualForm.nameEn.trim() || manualForm.name.trim() || targetClinicName,
+          corporationName: manualForm.corporationName.trim() || '',
+          contactPerson: manualForm.contactPerson.trim() || '',
+          doctorName: manualForm.doctorName.trim() || cleanDoctorNameEn,
+          doctorNameEn: cleanDoctorNameEn,
+          zip: manualForm.zip.trim() || '',
+          prefecture: '',
+          city: '',
+          address: '',
+          building: '',
+          addressEn: manualForm.addressEn.trim(),
+          phone: manualForm.phone.trim(),
+          email: '',
+          notes: 'CSVインボイス作成時の不足分手動入力により登録',
+          active: true,
+          createdAt: new Date().toISOString()
+        };
+
+        let newId = '';
+        if (onAddClinic) {
+          const res = await onAddClinic(payload);
+          newId = typeof res === 'string' ? res : `cln_${Date.now()}`;
+        } else {
+          const docRef = await addDoc(collection(db, 'clinics'), payload);
+          newId = docRef.id;
+        }
+
+        resultingClinic = { id: newId, ...payload };
+        showToast(`クリニック「${manualForm.name}」をクリニックマスタに登録し、インボイスに反映しました！`, 'success');
+        if (onRefreshMasters) onRefreshMasters();
+      } else {
+        // Temporary apply for this session without persisting to master
+        resultingClinic = {
+          id: `temp_${Date.now()}`,
+          clinicId: `TEMP-${Date.now().toString().slice(-4)}`,
+          name: manualForm.name.trim() || targetClinicName,
+          nameEn: manualForm.nameEn.trim() || manualForm.name.trim() || targetClinicName,
+          corporationName: manualForm.corporationName.trim() || '',
+          contactPerson: manualForm.contactPerson.trim() || '',
+          doctorName: manualForm.doctorName.trim() || cleanDoctorNameEn,
+          doctorNameEn: cleanDoctorNameEn,
+          zip: manualForm.zip.trim() || '',
+          prefecture: '',
+          city: '',
+          address: '',
+          building: '',
+          addressEn: manualForm.addressEn.trim(),
+          phone: manualForm.phone.trim(),
+          email: '',
+          notes: 'CSVインボイス手動補完（マスタ未登録）',
+          active: true,
+          createdAt: new Date().toISOString()
+        };
+        showToast(`今回のインボイスにのみ「${manualForm.name}」の不足情報を反映しました（マスタには未登録）。`, 'info');
+      }
+
+      // Update allocations in parseResult
+      setParseResult(prev => {
+        if (!prev) return null;
+        const nextAllocations = prev.allocations.map(alloc => {
+          // If matches target clinic name or ID, apply!
+          if (alloc.clinicNameCsv.trim() === targetClinicName.trim() || alloc.id === manualTargetAlloc.id) {
+            return {
+              ...alloc,
+              matchedClinic: resultingClinic,
+              isDbMatched: true,
+              dbLookupSource: saveToMaster ? ('FIRESTORE' as const) : ('MASTER_PRESET' as const),
+              doctorNameEnFromDb: cleanDoctorNameEn,
+              doctorNameJaFromDb: resultingClinic.doctorName,
+              warnings: alloc.warnings.filter(w => !w.includes('クリニック') && !w.includes('未登録'))
+            };
+          }
+          return alloc;
+        });
+
+        const unmatchedCount = nextAllocations.filter(a => !a.isDbMatched).length;
+        return {
+          ...prev,
+          allocations: nextAllocations,
+          unmatchedClinicsCount: unmatchedCount
+        };
+      });
+
+      setIsConfirmMasterOpen(false);
+      setIsManualModalOpen(false);
+      setManualTargetAlloc(null);
+    } catch (e: any) {
+      console.error('Error applying clinic:', e);
+      showToast(`処理中にエラーが発生しました: ${e.message || '不明なエラー'}`, 'error');
+    } finally {
+      setIsSavingMaster(false);
+    }
+  };
+
   // Action: Export ZIP of all Invoices
   const handleExportZip = async () => {
     if (selectedShipments.length === 0) {
       showToast('出力対象のインボイスを選択してください。', 'error');
       return;
+    }
+
+    // Safety check for unmatched clinics in selection
+    const unmatchedSelected = parseResult?.allocations.filter(a => selectedAllocIds.has(a.id) && !a.isDbMatched) || [];
+    if (unmatchedSelected.length > 0) {
+      const confirmProceed = window.confirm(
+        `【ご注意】未登録・不足情報が未入力のクリニックが ${unmatchedSelected.length} 件含まれています。\n` +
+        `（例: ${unmatchedSelected[0].clinicNameCsv}）\n\n` +
+        `このまま出力すると、インボイスの英語住所や医師名が仮の状態で作成されます。\n` +
+        `「手作業で不足分を入力」ボタンから入力することを推奨します。\n\n` +
+        `このままZIP出力を続行しますか？`
+      );
+      if (!confirmProceed) return;
     }
 
     setIsGeneratingZip(true);
@@ -434,6 +658,19 @@ export default function CsvInvoiceImporter({
     if (selectedShipments.length === 0) {
       showToast('保存対象のインボイスを選択してください。', 'error');
       return;
+    }
+
+    // Safety check for unmatched clinics in selection
+    const unmatchedSelected = parseResult?.allocations.filter(a => selectedAllocIds.has(a.id) && !a.isDbMatched) || [];
+    if (unmatchedSelected.length > 0) {
+      const confirmProceed = window.confirm(
+        `【ご注意】未登録・不足情報が未入力のクリニックが ${unmatchedSelected.length} 件含まれています。\n` +
+        `（例: ${unmatchedSelected[0].clinicNameCsv}）\n\n` +
+        `このまま保存すると出荷履歴の住所・医師名情報が不完全になります。\n` +
+        `「手作業で不足分を入力」してから保存することを推奨します。\n\n` +
+        `このまま出荷履歴DBに保存しますか？`
+      );
+      if (!confirmProceed) return;
     }
 
     setIsSavingDb(true);
@@ -733,6 +970,61 @@ export default function CsvInvoiceImporter({
       {/* Step 2: Parsed & Database Matched Review Section */}
       {parseResult && parseResult.allocations.length > 0 && (
         <div className="space-y-4">
+          {/* Missing Clinics Alert Banner */}
+          {parseResult.unmatchedClinicsCount > 0 && (
+            <div className="bg-slate-900 border-2 border-amber-500 rounded-2xl p-4 sm:p-5 shadow-2xl relative overflow-hidden">
+              <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                <div className="flex items-start gap-3.5">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 mt-0.5 shadow-md">
+                    <AlertTriangle className="w-6 h-6 stroke-[2.5]" />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <h4 className="text-base font-black text-amber-400 tracking-wide">
+                        【要確認】マスタに未登録のクリニックが {parseResult.unmatchedClinicsCount} 件あります
+                      </h4>
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-amber-500 text-slate-950 shadow-sm">
+                        不足情報の入力が必要です
+                      </span>
+                    </div>
+
+                    <p className="text-sm text-slate-200 leading-relaxed">
+                      インボイスを正常に発行するため、<strong className="text-white font-bold underline decoration-amber-500/80 underline-offset-2">英語住所・医師名（英語・Dr.不要）・電話番号</strong>などの不足情報を手作業で入力してください。<br className="hidden sm:inline" />
+                      入力時に「クリニックマスタに登録」を選択すれば、自動でデータベースに保存され次回以降も照合されます。
+                    </p>
+
+                    {/* Unmatched Clinic Buttons List */}
+                    <div className="pt-2.5 border-t border-slate-800/80">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-xs font-bold text-slate-300">未登録クリニック一覧（クリックして不足情報を入力）:</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        {Array.from(new Set(parseResult.allocations.filter(a => !a.isDbMatched).map(a => a.clinicNameCsv))).map(name => {
+                          const targetAlloc = parseResult.allocations.find(a => a.clinicNameCsv === name);
+                          return (
+                            <button
+                              key={name}
+                              type="button"
+                              onClick={() => targetAlloc && handleOpenManualModal(targetAlloc)}
+                              className="px-3 py-1.5 rounded-xl text-xs bg-slate-950 hover:bg-slate-800 border-2 border-amber-500/70 hover:border-amber-400 flex items-center gap-2 transition-all cursor-pointer shadow-md hover:scale-[1.02] group"
+                            >
+                              <Building2 className="w-4 h-4 text-amber-400 shrink-0" />
+                              <span className="font-bold text-white">{name}</span>
+                              <span className="px-2 py-0.5 rounded-md bg-amber-500 group-hover:bg-amber-400 text-slate-950 font-black text-[11px] flex items-center gap-1 shadow-sm shrink-0">
+                                <Edit3 className="w-3 h-3" />
+                                不足分を入力
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Summary Metric Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow-md">
@@ -899,9 +1191,31 @@ export default function CsvInvoiceImporter({
                 <div
                   key={alloc.id}
                   className={`bg-slate-900 border rounded-xl overflow-hidden transition-all shadow-md ${
-                    isSelected ? 'border-slate-700 ring-1 ring-blue-500/20' : 'border-slate-800/80 opacity-70'
+                    !alloc.isDbMatched 
+                      ? 'border-amber-500/50 ring-1 ring-amber-500/20' 
+                      : isSelected 
+                      ? 'border-slate-700 ring-1 ring-blue-500/20' 
+                      : 'border-slate-800/80 opacity-70'
                   }`}
                 >
+                  {/* Missing Clinic Urgent Alert Strip */}
+                  {!alloc.isDbMatched && (
+                    <div className="bg-amber-500/15 border-b border-amber-500/30 px-3.5 py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2 text-amber-300 font-bold">
+                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                        <span>クリニックマスタ未登録：英語住所・医師名などの不足情報が入力されていません</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenManualModal(alloc)}
+                        className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 transition-all shadow-md shadow-amber-500/20 shrink-0 cursor-pointer"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>手作業で不足分を入力</span>
+                      </button>
+                    </div>
+                  )}
+
                   {/* Allocation Header */}
                   <div className="bg-slate-950/60 p-3.5 border-b border-slate-800/80 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                     <div className="flex items-start md:items-center gap-3">
@@ -933,15 +1247,16 @@ export default function CsvInvoiceImporter({
                           {alloc.isDbMatched ? (
                             <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 font-bold flex items-center gap-1">
                               <ShieldCheck className="w-2.5 h-2.5" />
-                              DB照合完了
+                              照合完了
                             </span>
                           ) : alloc.dbLookupSource === 'MASTER_PRESET' ? (
                             <span className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-500/15 text-indigo-400 border border-indigo-500/20 font-bold">
                               マスタプリセット自動補完
                             </span>
                           ) : (
-                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20 font-bold">
-                              未登録（仮データ）
+                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20 font-bold flex items-center gap-1">
+                              <AlertCircle className="w-2.5 h-2.5" />
+                              未登録（不足情報あり）
                             </span>
                           )}
                         </div>
@@ -949,15 +1264,15 @@ export default function CsvInvoiceImporter({
                     </div>
 
                     {/* Recipient & Action buttons */}
-                    <div className="flex items-center gap-4 text-xs">
+                    <div className="flex items-center gap-3 sm:gap-4 text-xs">
                       {/* Recipient note */}
                       <div className="text-right hidden sm:block">
                         <div className="text-slate-400 text-[10px]">宛名（医師名）</div>
                         <div className="text-slate-200 font-bold font-mono">
-                          {alloc.doctorNameEnFromDb}
+                          {alloc.doctorNameEnFromDb || '（未入力）'}
                         </div>
                         <div className="text-[9px] text-slate-500">
-                          DB参照（CSVのB列「{alloc.csvIgnoredRecipient || '未指定'}」は無視）
+                          {alloc.isDbMatched ? 'マスタ/手動入力参照' : `CSV B列「${alloc.csvIgnoredRecipient || '未指定'}」は無視`}
                         </div>
                       </div>
 
@@ -969,6 +1284,21 @@ export default function CsvInvoiceImporter({
                         </div>
                         <div className="text-[10px] text-slate-400 font-mono">{alloc.totalQty} pcs</div>
                       </div>
+
+                      {/* Manual Fill / Edit Button */}
+                      <button
+                        type="button"
+                        onClick={() => handleOpenManualModal(alloc)}
+                        className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 text-xs font-semibold cursor-pointer transition-all ${
+                          !alloc.isDbMatched 
+                            ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold border-amber-400 shadow-sm shadow-amber-500/20' 
+                            : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border-slate-700'
+                        }`}
+                        title="クリニック不足情報の入力・修正"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>{alloc.isDbMatched ? '情報修正' : '不足分入力'}</span>
+                      </button>
 
                       {/* Preview Button */}
                       <button
@@ -1084,6 +1414,330 @@ export default function CsvInvoiceImporter({
                   <span>PDFプレビューを生成中...</span>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Clinic Information Input Modal */}
+      {isManualModalOpen && manualTargetAlloc && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center">
+                  <Edit3 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>クリニック不足情報の入力・手動補完</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                      未登録補完
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    インボイス印字に必要な英語住所・医師名などの不足情報を入力してください
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsManualModalOpen(false);
+                  setManualTargetAlloc(null);
+                }}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body / Form */}
+            <form onSubmit={handlePromptConfirmMaster} className="p-5 space-y-4 max-h-[75vh] overflow-y-auto text-xs">
+              {/* CSV Raw Context Information Notice */}
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 block uppercase tracking-wider">CSV記載のクリニック名 (A列)</span>
+                  <p className="text-xs font-bold text-white font-mono mt-0.5">{manualTargetAlloc.clinicNameCsv}</p>
+                </div>
+                {manualTargetAlloc.csvIgnoredRecipient && (
+                  <div className="border-t sm:border-t-0 sm:border-l border-slate-800 pt-2 sm:pt-0 sm:pl-3 flex items-center justify-between sm:justify-start gap-2">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-500 block uppercase tracking-wider">CSV記載の受取人 (B列)</span>
+                      <p className="text-xs font-bold text-slate-300 font-mono mt-0.5">{manualTargetAlloc.csvIgnoredRecipient}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const clean = manualTargetAlloc.csvIgnoredRecipient.replace(/^Dr\.?\s*/i, '').trim();
+                        setManualForm(prev => ({
+                          ...prev,
+                          doctorNameEn: clean
+                        }));
+                        showToast(`医師名（英語）に「${clean}」をコピーしました`, 'info');
+                      }}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-blue-400 text-[10px] font-bold border border-slate-700 cursor-pointer transition-colors"
+                      title="医師名（英語）にコピー"
+                    >
+                      英語名にコピー
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Form Fields Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Clinic Name (Japanese) */}
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">
+                    クリニック名（日本語） <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={manualForm.name}
+                    onChange={(e) => setManualForm({ ...manualForm, name: e.target.value })}
+                    placeholder="例: 5DENTAL東京銀座"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+
+                {/* Clinic Name (English) */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-slate-300 font-bold">
+                      クリニック名（英語表記） <span className="text-rose-400">*</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setManualForm(prev => ({ ...prev, nameEn: prev.nameEn.toUpperCase() }))}
+                      className="text-[10px] text-blue-400 hover:underline font-bold"
+                    >
+                      大文字化 (UPPERCASE)
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    value={manualForm.nameEn}
+                    onChange={(e) => setManualForm({ ...manualForm, nameEn: e.target.value })}
+                    placeholder="例: 5DENTAL TOKYO GINZA"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono uppercase"
+                  />
+                </div>
+              </div>
+
+              {/* English Address (Full Width) */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-slate-300 font-bold flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-blue-400" />
+                    <span>英語住所（Address in English） <span className="text-rose-400">*</span></span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!manualForm.addressEn) {
+                        setManualForm(prev => ({
+                          ...prev,
+                          addressEn: '3F Ginza Medical Bldg, 5-1-1 Ginza, Chuo-ku, Tokyo 104-0061, Japan'
+                        }));
+                      }
+                    }}
+                    className="text-[10px] text-slate-400 hover:text-blue-400 underline"
+                  >
+                    サンプル住所を挿入
+                  </button>
+                </div>
+                <textarea
+                  required
+                  rows={2}
+                  value={manualForm.addressEn}
+                  onChange={(e) => setManualForm({ ...manualForm, addressEn: e.target.value })}
+                  placeholder="例: 3F Ginza Medical Bldg, 5-1-1 Ginza, Chuo-ku, Tokyo 104-0061, Japan"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono"
+                />
+                <span className="text-[10px] text-slate-500 block mt-0.5">
+                  ※インボイスPDFの宛先住所に直接印字されます（ビル名・番地・市区町村・国名）
+                </span>
+              </div>
+
+              {/* Doctor Names Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Doctor Name (English) - Dr. excluded */}
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">
+                    医師名（英語表記） <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={manualForm.doctorNameEn}
+                    onChange={(e) => {
+                      // Automatically strip Dr. prefix if user types it
+                      const sanitized = e.target.value.replace(/^Dr\.?\s*/i, '');
+                      setManualForm({ ...manualForm, doctorNameEn: sanitized });
+                    }}
+                    placeholder="例: TARO YAMADA （Dr.不要）"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono uppercase"
+                  />
+                  <span className="text-[10px] text-amber-400 block mt-0.5 font-medium">
+                    ※「Dr.」の入力は不要です（入力された場合も自動で除去されます）
+                  </span>
+                </div>
+
+                {/* Phone */}
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1 flex items-center gap-1.5">
+                    <Phone className="w-3.5 h-3.5 text-blue-400" />
+                    <span>電話番号（Phone） <span className="text-rose-400">*</span></span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={manualForm.phone}
+                    onChange={(e) => setManualForm({ ...manualForm, phone: e.target.value })}
+                    placeholder="例: 03-1234-5678"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              {/* Optional Fields Row */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-800/80">
+                {/* Doctor Name (Japanese) */}
+                <div>
+                  <label className="block text-slate-400 text-[11px] font-medium mb-1">
+                    医師名（日本語 / 任意）
+                  </label>
+                  <input
+                    type="text"
+                    value={manualForm.doctorName}
+                    onChange={(e) => setManualForm({ ...manualForm, doctorName: e.target.value })}
+                    placeholder="例: 山田 太郎"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-white placeholder:text-slate-600 outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                {/* Zip Code */}
+                <div>
+                  <label className="block text-slate-400 text-[11px] font-medium mb-1">
+                    郵便番号（任意）
+                  </label>
+                  <input
+                    type="text"
+                    value={manualForm.zip}
+                    onChange={(e) => setManualForm({ ...manualForm, zip: e.target.value })}
+                    placeholder="例: 104-0061"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 font-mono"
+                  />
+                </div>
+
+                {/* Corporation Name */}
+                <div>
+                  <label className="block text-slate-400 text-[11px] font-medium mb-1">
+                    法人名（任意）
+                  </label>
+                  <input
+                    type="text"
+                    value={manualForm.corporationName}
+                    onChange={(e) => setManualForm({ ...manualForm, corporationName: e.target.value })}
+                    placeholder="例: 医療法人社団○○会"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-white placeholder:text-slate-600 outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              {/* Modal Footer Actions */}
+              <div className="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsManualModalOpen(false);
+                    setManualTargetAlloc(null);
+                  }}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-600/30 flex items-center gap-2 cursor-pointer transition-all"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>入力内容をインボイスに反映する</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* "Register to Clinic Master?" Confirmation Popup */}
+      {isConfirmMasterOpen && (
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden p-6 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                <Database className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-bold text-white">クリニックマスタへの登録確認</h4>
+                <p className="text-xs text-slate-400">マスタ登録を行うか選択してください</p>
+              </div>
+            </div>
+
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 mb-5 space-y-1.5 text-xs">
+              <p className="text-slate-300">
+                入力されたクリニック「<strong className="text-white font-bold">{manualForm.name}</strong>」の情報を、クリニックマスタに登録しますか？
+              </p>
+              <div className="text-[11px] text-slate-400 pt-1.5 border-t border-slate-800 space-y-1 font-mono">
+                <div>英語名: {manualForm.nameEn}</div>
+                <div>医師名: {manualForm.doctorNameEn}</div>
+                <div>電話番号: {manualForm.phone}</div>
+              </div>
+            </div>
+
+            <div className="space-y-2.5">
+              {/* Option 1: Yes, Register to Master */}
+              <button
+                type="button"
+                disabled={isSavingMaster}
+                onClick={() => handleApplyAndSaveClinic(true)}
+                className="w-full py-3 px-4 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+              >
+                {isSavingMaster ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4" />
+                )}
+                <span>はい（クリニックマスタに登録してインボイス作成）</span>
+              </button>
+              <p className="text-[10px] text-slate-400 text-center">
+                ※マスタに保存され、今後のCSV取込でも自動で住所・医師名が照合されます
+              </p>
+
+              {/* Option 2: No, Apply temporarily for this invoice only */}
+              <button
+                type="button"
+                disabled={isSavingMaster}
+                onClick={() => handleApplyAndSaveClinic(false)}
+                className="w-full py-2.5 px-4 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+              >
+                <span>いいえ（今回のみ一時適用してインボイス作成）</span>
+              </button>
+
+              {/* Cancel */}
+              <button
+                type="button"
+                disabled={isSavingMaster}
+                onClick={() => setIsConfirmMasterOpen(false)}
+                className="w-full py-2 text-xs text-slate-500 hover:text-slate-300 cursor-pointer transition-colors"
+              >
+                戻る（入力画面を再編集）
+              </button>
             </div>
           </div>
         </div>

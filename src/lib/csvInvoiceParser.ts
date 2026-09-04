@@ -482,8 +482,9 @@ export function parseShippingCsv(
       const paddedNum = String(clinicCounter).padStart(3, '0');
       const generatedInvoiceNo = `${basePrefix}${dateStr}-${paddedNum}`;
 
-      // Rule: Recipient is pulled strictly from DB (CSV Column B is ignored)
-      const docEn = clinicObj?.doctorNameEn || (clinicObj?.doctorName ? `Dr. ${clinicObj.doctorName}` : 'Dr. Medical Director');
+      // Rule: Recipient is pulled strictly from DB (CSV Column B is ignored, strictly WITHOUT "Dr." prefix)
+      const rawDocEn = clinicObj?.doctorNameEn || clinicObj?.doctorName || 'Medical Director';
+      const docEn = rawDocEn.replace(/^Dr\.?\s*/i, '').trim();
       const docJa = clinicObj?.doctorName || clinicObj?.contactPerson || '院長';
 
       currentAlloc = {

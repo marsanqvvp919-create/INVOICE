@@ -1326,6 +1326,7 @@ export default function App() {
               warehouses={warehouses}
               settings={settings}
               onNavigateToShipments={() => setActiveTab('shipments')}
+              onAddClinic={handleAddClinic}
             />
           )}
 

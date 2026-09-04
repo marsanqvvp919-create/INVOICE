@@ -123,19 +123,24 @@ export function getEnglishClinicDetails(consignee: Partial<Clinic> = {}) {
     }
   }
 
-  // 3. Doctor Name in English
+  // 3. Doctor Name in English (strictly WITHOUT "Dr." prefix as per requirements)
   let doctorNameEn = consignee.doctorNameEn ? consignee.doctorNameEn.trim() : '';
+  // Strip any existing Dr. or Dr prefix
+  doctorNameEn = doctorNameEn.replace(/^Dr\.?\s*/i, '').trim();
+
   if (!doctorNameEn || containsCJK(doctorNameEn)) {
-    if (consignee.doctorName === '佐藤 茂') doctorNameEn = 'Dr. Shigeru Sato';
-    else if (consignee.doctorName === '相川 佳之') doctorNameEn = 'Dr. Yoshiyuki Aikawa';
-    else if (consignee.doctorName === 'グナル チョル') doctorNameEn = 'Dr. Chul Gunal';
+    if (consignee.doctorName === '佐藤 茂') doctorNameEn = 'Shigeru Sato';
+    else if (consignee.doctorName === '相川 佳之') doctorNameEn = 'Yoshiyuki Aikawa';
+    else if (consignee.doctorName === 'グナル チョル') doctorNameEn = 'Chul Gunal';
     else if (consignee.doctorName) {
       const cleanDoc = consignee.doctorName.replace(/[^\x00-\x7F]/g, '').trim();
-      doctorNameEn = cleanDoc ? `Dr. ${cleanDoc}` : 'Dr. Medical Director';
+      doctorNameEn = cleanDoc.replace(/^Dr\.?\s*/i, '').trim() || 'Medical Director';
     } else {
-      doctorNameEn = 'Dr. Medical Director';
+      doctorNameEn = 'Medical Director';
     }
   }
+  // Ensure "Dr." is stripped once again just in case
+  doctorNameEn = doctorNameEn.replace(/^Dr\.?\s*/i, '').trim();
 
   // 4. Contact Person in English
   let contactPersonEn = consignee.contactPersonEn ? consignee.contactPersonEn.trim() : '';
@@ -328,46 +333,49 @@ function drawParties(doc: jsPDF, shipment: Shipment, startY: number): number {
     shipperY += 4.8;
   }
 
-  // Consignee details with comfortable line height
+  // Consignee details (Only: Clinic Name, English Address, Doctor Name English without "Dr.", Phone number)
   const clinicEn = getEnglishClinicDetails(consignee);
   let consigneeY = startY + 14;
+
+  // 1. Clinic Name in English (Format: "TO : CLINIC NAME")
   setupFont(doc, 'bold');
   doc.setTextColor(15, 23, 42); // Slate-900
   doc.setFontSize(9);
-  doc.text(safeText(clinicEn.nameEn), colRightX + 4, consigneeY);
+  const rawClinicName = safeText(clinicEn.nameEn).trim();
+  const toClinicTitle = rawClinicName.toUpperCase().startsWith('TO :')
+    ? rawClinicName.toUpperCase()
+    : `TO : ${rawClinicName.toUpperCase()}`;
+  doc.text(toClinicTitle, colRightX + 4, consigneeY);
   
+  // 2. English Address
   setupFont(doc, 'normal');
   doc.setFontSize(8);
-  doc.setTextColor(71, 85, 105); // Slate-600
- 
+  doc.setTextColor(51, 65, 85); // Slate-700
   const consigneeAddressLines = doc.splitTextToSize(safeText(clinicEn.addressEn), colWidth - 8);
-  consigneeY += 5.2;
+  consigneeY += 5.0;
   consigneeAddressLines.forEach((line: string) => {
     doc.text(line, colRightX + 4, consigneeY);
-    consigneeY += 4.8;
+    consigneeY += 4.5;
   });
 
-  consigneeY += 1.5;
-  doc.setFontSize(8);
-  drawLabelValue(colRightX + 4, consigneeY, 'Country: ', 'Japan');
-  consigneeY += 4.8;
-  if (clinicEn.zip) {
-    drawLabelValue(colRightX + 4, consigneeY, 'Postal Code: ', clinicEn.zip);
-    consigneeY += 4.8;
+  // 3. Doctor Name in English (strictly without "Dr.", format: "attn : DOCTOR NAME")
+  const cleanDoc = safeText(clinicEn.doctorNameEn).replace(/^Dr\.?\s*/i, '').trim();
+  if (cleanDoc) {
+    consigneeY += 1.0;
+    setupFont(doc, 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(15, 23, 42); // Slate-900
+    doc.text(`attn : ${cleanDoc}`, colRightX + 4, consigneeY);
+    consigneeY += 4.6;
   }
-  if (clinicEn.doctorNameEn) {
-    drawLabelValue(colRightX + 4, consigneeY, 'Doctor: ', clinicEn.doctorNameEn);
-    consigneeY += 4.8;
-  }
-  if (clinicEn.contactPersonEn) {
-    drawLabelValue(colRightX + 4, consigneeY, 'Contact: ', clinicEn.contactPersonEn);
-    consigneeY += 4.8;
-  }
-  drawLabelValue(colRightX + 4, consigneeY, 'Tel: ', clinicEn.phone || '');
-  consigneeY += 4.8;
-  if (clinicEn.email) {
-    drawLabelValue(colRightX + 4, consigneeY, 'Email: ', clinicEn.email);
-    consigneeY += 4.8;
+
+  // 4. Phone number (strictly phone number, no prefix)
+  if (clinicEn.phone) {
+    setupFont(doc, 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(51, 65, 85); // Slate-700
+    doc.text(safeText(clinicEn.phone), colRightX + 4, consigneeY);
+    consigneeY += 4.2;
   }
 
   // Max height of the party block with comfortable margin
@@ -502,11 +510,11 @@ function drawShippingInfo(doc: jsPDF, shipment: Shipment, settings: SystemSettin
   // Row 1 (textY = startY + 12.5)
   doc.setFontSize(7.5);
   drawLabelValue(19, startY + 12.5, 'Shipping Route: ', routeInfo.route);
-  drawLabelValue(95, startY + 12.5, 'Reason for Export: ', settings.reasonForExport || 'Commercial Sale for Medical Use');
+  drawLabelValue(95, startY + 12.5, 'Reason for Export: ', settings?.reasonForExport || 'Commercial Sale for Medical Use');
   
   // Row 2 (textY = startY + 17.5)
   drawLabelValue(19, startY + 17.5, 'Country of Origin: ', routeInfo.origin);
-  drawLabelValue(95, startY + 17.5, 'Terms of Delivery: ', settings.termsOfDelivery || 'EX-WORKS IN JPY');
+  drawLabelValue(95, startY + 17.5, 'Terms of Delivery: ', settings?.termsOfDelivery || 'EX-WORKS IN JPY');
 
   return startY + boxHeight + 6;
 }
@@ -546,9 +554,10 @@ export function generateInvoicePDF(shipment: Shipment, settings: SystemSettings)
   doc.setFontSize(8);
   doc.setTextColor(51, 65, 85); // Slate-700
 
-  const decimalPlaces = settings.decimalPlaces ?? 2;
+  const decimalPlaces = settings?.decimalPlaces ?? 2;
   const formatMoney = (val: number) => {
-    return val.toLocaleString('ja-JP', { 
+    const num = typeof val === 'number' && !isNaN(val) ? val : 0;
+    return num.toLocaleString('ja-JP', { 
       minimumFractionDigits: decimalPlaces, 
       maximumFractionDigits: decimalPlaces 
     });
