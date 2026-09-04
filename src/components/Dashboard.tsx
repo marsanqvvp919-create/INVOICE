@@ -18,7 +18,8 @@ import {
   AlertTriangle,
   Trash2,
   ExternalLink,
-  Ban
+  Ban,
+  FileSpreadsheet
 } from 'lucide-react';
 import { Shipment, Product, Clinic, SystemSettings } from '../types';
 import { generateInvoicePDF, loadJapaneseFont } from '../lib/pdf';
@@ -166,6 +167,34 @@ export default function Dashboard({
 
   return (
     <div className="space-y-6">
+      {/* Quick Launch CSV Bulk Invoice Banner */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 md:p-5 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-center gap-3.5">
+          <div className="w-10 h-10 md:w-11 md:h-11 bg-blue-600 rounded-xl flex items-center justify-center text-white shrink-0 shadow-md shadow-blue-600/30">
+            <FileSpreadsheet className="w-5 h-5 md:w-6 md:h-6" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-white text-sm md:text-base">CSV出荷データ一括インボイス作成</h3>
+              <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold text-[10px] px-2 py-0.5 rounded-full">
+                新機能
+              </span>
+            </div>
+            <p className="text-slate-400 text-xs mt-0.5">
+              CSVのA列（クリニック名）とE列（製剤名）をDB参照、B列・C列を無視してシステム自動採番・医師名自動取得し、一式でインボイスPDFを発行できます。
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setActiveTab('csv-invoice')}
+          className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-2 shadow-md shadow-blue-600/30 transition-all cursor-pointer shrink-0 self-start md:self-auto"
+        >
+          <span>CSVインボイス作成を開く</span>
+          <ArrowRight className="w-4 h-4" />
+        </button>
+      </div>
+
       {/* Metric Cards Banner */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-5">
         {/* This month's total quantity shipped */}

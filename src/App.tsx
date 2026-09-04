@@ -32,6 +32,7 @@ import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import ShipmentAllocation from './components/ShipmentAllocation';
 import BulkAllocation from './components/BulkAllocation';
+import CsvInvoiceImporter from './components/CsvInvoiceImporter';
 import ShipmentHistory from './components/ShipmentHistory';
 import StockInput from './components/StockInput';
 import ClinicMaster from './components/ClinicMaster';
@@ -1318,6 +1319,16 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'csv-invoice' && (
+            <CsvInvoiceImporter 
+              clinics={clinics}
+              products={products}
+              warehouses={warehouses}
+              settings={settings}
+              onNavigateToShipments={() => setActiveTab('shipments')}
+            />
+          )}
+
           {activeTab === 'bulk-allocation' && (
             <BulkAllocation 
               products={products}
@@ -1327,6 +1338,7 @@ export default function App() {
               currentUser={currentUser}
               settings={settings}
               onSubmitBulkShipments={handleBulkShipmentsSubmit}
+              onSwitchToCsvInvoice={() => setActiveTab('csv-invoice')}
             />
           )}
 

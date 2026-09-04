@@ -20,7 +20,9 @@ import {
   CheckSquare,
   Square,
   Package,
-  Minus
+  Minus,
+  FileSpreadsheet,
+  ArrowRight
 } from 'lucide-react';
 import { 
   collection, 
@@ -51,6 +53,7 @@ interface BulkAllocationProps {
   currentUser: User;
   settings: SystemSettings;
   onSubmitBulkShipments: (shipments: any[]) => Promise<Shipment[]>;
+  onSwitchToCsvInvoice?: () => void;
 }
 
 interface AllocatedClinic {
@@ -89,7 +92,8 @@ export default function BulkAllocation({
   lots,
   currentUser,
   settings,
-  onSubmitBulkShipments
+  onSubmitBulkShipments,
+  onSwitchToCsvInvoice
 }: BulkAllocationProps) {
   
   // State
@@ -661,6 +665,36 @@ export default function BulkAllocation({
 
   return (
     <div className="space-y-6">
+      {/* CSV Import Banner */}
+      {onSwitchToCsvInvoice && (
+        <div className="bg-gradient-to-r from-slate-900 via-blue-950/40 to-slate-900 border border-blue-500/30 rounded-2xl p-4 md:p-5 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="w-10 h-10 md:w-11 md:h-11 bg-blue-600 rounded-xl flex items-center justify-center text-white shrink-0 shadow-md shadow-blue-600/30">
+              <FileSpreadsheet className="w-5 h-5 md:w-6 md:h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-bold text-white text-sm md:text-base">出荷資料CSVから一括インボイス作成</h3>
+                <span className="bg-blue-500/20 text-blue-300 border border-blue-500/30 font-bold text-[10px] px-2 py-0.5 rounded-full">
+                  推奨
+                </span>
+              </div>
+              <p className="text-slate-300 text-xs mt-0.5">
+                A列（クリニック名）とE列（製剤名）をデータベースと自動照合。B列・C列を無視してシステム自動採番・医師名自動取得し、一式でインボイスPDFを発行できます。
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onSwitchToCsvInvoice}
+            className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-2 shadow-md shadow-blue-600/30 transition-all cursor-pointer shrink-0 self-start md:self-auto"
+          >
+            <span>CSV一括インボイス作成を開く</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Draft Notification Banner */}
       <div className="bg-amber-50/90 border border-amber-200/90 rounded-2xl p-4 md:p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">

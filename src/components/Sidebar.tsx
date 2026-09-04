@@ -16,7 +16,8 @@ import {
   Database,
   Sparkles,
   ArrowUpRight,
-  X
+  X,
+  FileSpreadsheet
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -48,7 +49,8 @@ export default function Sidebar({
   
   const mainMenuItems = [
     { id: 'dashboard', label: 'ダッシュボード', icon: LayoutDashboard },
-    { id: 'bulk-allocation', label: 'インボイス作成・一括配分', icon: Layers, badge: '一括' },
+    { id: 'csv-invoice', label: 'CSV一括インボイス作成', icon: FileSpreadsheet, badge: 'CSV' },
+    { id: 'bulk-allocation', label: 'インボイス作成・一括配分', icon: Layers },
     { id: 'shipments', label: 'インボイス履歴・PDF管理', icon: History },
   ];
 

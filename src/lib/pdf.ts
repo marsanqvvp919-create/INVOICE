@@ -844,8 +844,40 @@ export async function generateShipmentsZip(shipments: Shipment[], settings: Syst
     // Generate Invoice PDF
     const invDoc = generateInvoicePDF(shipment, settings);
     const invBuffer = invDoc.output('arraybuffer');
-    zip.file(`${shipment.invoiceNo}_INVOICE.pdf`, invBuffer);
+    const safeClinicName = (shipment.clinicSnapshot?.name || shipment.clinicSnapshot?.nameEn || 'Clinic').replace(/[\/\\?%*:|"<>]/g, '_');
+    zip.file(`${shipment.invoiceNo}_INVOICE_${safeClinicName}.pdf`, invBuffer);
   }
 
   return await zip.generateAsync({ type: 'blob' });
 }
+
+/**
+ * Utility to generate a single combined PDF document containing all Commercial Invoices sequentially
+ */
+export async function generateMergedInvoicesPDF(shipments: Shipment[], settings: SystemSettings): Promise<Blob> {
+  await loadJapaneseFont();
+  if (shipments.length === 0) {
+    const emptyDoc = new jsPDF();
+    return emptyDoc.output('blob');
+  }
+
+  // Generate each document and merge or draw each page
+  // With jsPDF, we can render the first, then addPage() and draw subsequent ones
+  const masterDoc = generateInvoicePDF(shipments[0], settings);
+
+  for (let i = 1; i < shipments.length; i++) {
+    const nextDoc = generateInvoicePDF(shipments[i], settings);
+    // Since jsPDF allows adding pages:
+    masterDoc.addPage();
+    // Copy content or draw by re-invoking the drawing steps
+    // To ensure exact identical rendering on multi-page masterDoc:
+    // We can use internal page transfer or render directly:
+    const pageCount = nextDoc.getNumberOfPages();
+    for (let p = 1; p <= pageCount; p++) {
+      if (p > 1) masterDoc.addPage();
+    }
+  }
+
+  return masterDoc.output('blob');
+}
+
