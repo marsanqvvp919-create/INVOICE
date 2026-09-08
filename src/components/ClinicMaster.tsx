@@ -8,8 +8,10 @@ import {
   Upload, 
   X, 
   AlertCircle, 
+  AlertTriangle,
   CheckCircle,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Loader2
 } from 'lucide-react';
 import { Clinic } from '../types';
 
@@ -37,6 +39,11 @@ export default function ClinicMaster({
   const [editingClinic, setEditingClinic] = useState<Clinic | null>(null);
   const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
+  const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
+  const [clinicToDelete, setClinicToDelete] = useState<Clinic | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [notification, setNotification] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [replaceAllMode, setReplaceAllMode] = useState(false);
   const [csvPreview, setCsvPreview] = useState<any[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -176,14 +183,47 @@ export default function ClinicMaster({
     }
   };
 
-  const handleDelete = async (id: string, name: string) => {
-    if (window.confirm(`本当に「${name}」を削除しますか？`)) {
-      try {
-        await onDeleteClinic(id);
-      } catch (err) {
-        console.error(err);
-        alert('削除中にエラーが発生しました。');
-      }
+  const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
+    setNotification({ text, type });
+    setTimeout(() => {
+      setNotification(prev => (prev?.text === text ? null : prev));
+    }, 4000);
+  };
+
+  const handleOpenDelete = (clinic: Clinic) => {
+    setDeleteError(null);
+    setClinicToDelete(clinic);
+  };
+
+  const handleExecuteDeleteClinic = async () => {
+    if (!clinicToDelete) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDeleteClinic(clinicToDelete.id);
+      showNotification(`クリニック「${clinicToDelete.name || clinicToDelete.clinicId}」を削除しました。`, 'success');
+      setClinicToDelete(null);
+    } catch (err: any) {
+      console.error('Failed to delete clinic:', err);
+      setDeleteError(err?.message || '削除中にエラーが発生しました。');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleExecuteDeleteAll = async () => {
+    if (!onDeleteAllClinics) return;
+    setIsDeletingAll(true);
+    setDeleteError(null);
+    try {
+      await onDeleteAllClinics();
+      setIsDeleteAllModalOpen(false);
+      showNotification(`クリニックマスタを全件削除しました（計 ${clinics.length} 件）。`, 'success');
+    } catch (err: any) {
+      console.error('Failed to delete all clinics:', err);
+      setDeleteError(err?.message || '全件削除中にエラーが発生しました: ' + (err?.message || '不明なエラー'));
+    } finally {
+      setIsDeletingAll(false);
     }
   };
 
@@ -657,29 +697,38 @@ export default function ClinicMaster({
     document.body.removeChild(link);
   };
 
-  const handleConfirmDeleteAll = async () => {
-    const confirmed = window.confirm(
-      `【警告】クリニックマスタの全データ（${clinics.length}件）を完全に削除します。\n` +
-      `この操作は取り消せません。再度CSVから登録し直す場合は「OK」を押してください。`
-    );
-    if (!confirmed) return;
-
-    setIsDeletingAll(true);
-    try {
-      if (onDeleteAllClinics) {
-        await onDeleteAllClinics();
-        alert('クリニックマスタを全件削除しました。新しいCSVを取り込んでください。');
-      }
-    } catch (err: any) {
-      console.error('Failed to delete all clinics:', err);
-      alert('全件削除中にエラーが発生しました: ' + (err?.message || '不明なエラー'));
-    } finally {
-      setIsDeletingAll(false);
-    }
+  const handleConfirmDeleteAll = () => {
+    setDeleteError(null);
+    setIsDeleteAllModalOpen(true);
   };
 
   return (
     <div className="space-y-6">
+      {/* Notification Toast */}
+      {notification && (
+        <div className={`p-3.5 rounded-lg border flex items-center justify-between text-xs animate-in fade-in slide-in-from-top-2 duration-200 shadow-sm ${
+          notification.type === 'success' 
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
+            : 'bg-rose-50 border-rose-200 text-rose-800'
+        }`}>
+          <div className="flex items-center gap-2">
+            {notification.type === 'success' ? (
+              <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            )}
+            <span className="font-semibold">{notification.text}</span>
+          </div>
+          <button 
+            type="button"
+            onClick={() => setNotification(null)}
+            className="text-slate-400 hover:text-slate-600 cursor-pointer ml-3"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Header and top buttons */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -799,6 +848,7 @@ export default function ClinicMaster({
                     <td className="px-5 py-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
                         <button
+                          type="button"
                           onClick={() => handleOpenEdit(c)}
                           className="bg-white hover:bg-slate-100 text-slate-600 p-1.5 rounded border border-slate-200 hover:border-slate-300 transition-colors cursor-pointer"
                           title="編集"
@@ -806,9 +856,11 @@ export default function ClinicMaster({
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
                         <button
-                          onClick={() => handleDelete(c.id, c.name)}
-                          className="bg-white hover:bg-red-50 text-red-600 p-1.5 rounded border border-slate-200 hover:border-red-200 transition-colors cursor-pointer"
+                          type="button"
+                          onClick={() => handleOpenDelete(c)}
+                          className="bg-white hover:bg-red-50 text-red-600 p-1.5 rounded border border-slate-200 hover:border-red-200 transition-colors cursor-pointer hover:shadow-xs active:scale-95"
                           title="削除"
+                          aria-label={`クリニック「${c.name || c.clinicId}」を削除`}
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -1252,6 +1304,202 @@ export default function ClinicMaster({
                   {replaceAllMode ? '全置換インポートを実行' : 'CSVのデータをそのまま反映する'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Single Clinic Delete Confirmation Modal */}
+      {clinicToDelete && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-6 py-4 border-b border-rose-100 flex items-center justify-between bg-rose-50/50">
+              <h3 className="text-sm font-bold text-rose-900 flex items-center gap-2">
+                <Trash2 className="w-4 h-4 text-rose-600" />
+                <span>クリニックの削除確認</span>
+              </h3>
+              <button 
+                type="button"
+                onClick={() => {
+                  if (!isDeleting) {
+                    setClinicToDelete(null);
+                    setDeleteError(null);
+                  }
+                }}
+                disabled={isDeleting}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              <p className="text-slate-700 leading-relaxed font-medium">
+                以下のクリニックをクリニックマスタから完全に削除しますか？
+              </p>
+
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-slate-400 font-bold uppercase">ID:</span>
+                  <span className="font-mono font-bold text-slate-900 bg-white px-1.5 py-0.5 rounded border border-slate-200 text-xs">
+                    {clinicToDelete.clinicId || '未設定'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 font-bold block">クリニック名（日本語）:</span>
+                  <span className="text-slate-900 font-bold text-sm">
+                    {clinicToDelete.name || '（名称なし）'}
+                  </span>
+                </div>
+                {clinicToDelete.nameEn && (
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-bold block">英語表記:</span>
+                    <span className="font-mono text-slate-700 font-medium">
+                      {clinicToDelete.nameEn}
+                    </span>
+                  </div>
+                )}
+                {clinicToDelete.doctorName && (
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-bold block">医師名:</span>
+                    <span className="text-slate-700">
+                      {clinicToDelete.doctorName}
+                      {clinicToDelete.doctorNameEn ? ` (${clinicToDelete.doctorNameEn})` : ''}
+                    </span>
+                  </div>
+                )}
+                {clinicToDelete.address && (
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-bold block">住所:</span>
+                    <span className="text-slate-600 truncate block">
+                      {clinicToDelete.address}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2.5 text-amber-800 text-[11px]">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <p className="leading-normal">
+                  この操作は取り消せません。削除されたクリニック情報は、次回以降の出荷データ照合から除外されます（※作成済みの過去の出荷履歴データ自体は保持されます）。
+                </p>
+              </div>
+
+              {deleteError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{deleteError}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setClinicToDelete(null);
+                  setDeleteError(null);
+                }}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteDeleteClinic}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm shadow-rose-600/20 disabled:opacity-60"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>削除中...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>削除を実行する</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete All Clinics Confirmation Modal */}
+      {isDeleteAllModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-6 py-4 border-b border-rose-200 flex items-center justify-between bg-rose-100/60">
+              <h3 className="text-sm font-bold text-rose-950 flex items-center gap-2">
+                <AlertTriangle className="w-4.5 h-4.5 text-rose-600" />
+                <span>クリニックマスタ全件削除の確認</span>
+              </h3>
+              <button 
+                type="button"
+                onClick={() => {
+                  if (!isDeletingAll) {
+                    setIsDeleteAllModalOpen(false);
+                    setDeleteError(null);
+                  }
+                }}
+                disabled={isDeletingAll}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              <p className="text-slate-900 font-bold leading-relaxed">
+                クリニックマスタの全データ（合計 <span className="text-rose-600 text-sm font-black">{clinics.length}</span> 件）をすべて削除しますか？
+              </p>
+
+              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-800 text-[11px] leading-relaxed">
+                <strong>【重要・警告】</strong><br />
+                この操作を実行すると、登録されているすべての提携クリニックデータが完全に消去されます。再度マスターを構築する場合は、最新のクリニック一覧CSVを「CSV一括登録」から再インポートする必要があります。
+              </div>
+
+              {deleteError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{deleteError}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDeleteAllModalOpen(false);
+                  setDeleteError(null);
+                }}
+                disabled={isDeletingAll}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteDeleteAll}
+                disabled={isDeletingAll}
+                className="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm shadow-rose-600/30 disabled:opacity-60"
+              >
+                {isDeletingAll ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>全件削除中...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>全件を完全削除する</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>
