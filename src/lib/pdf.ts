@@ -543,7 +543,7 @@ export function generateInvoicePDF(shipment: Shipment, settings: SystemSettings)
   doc.setTextColor(255, 255, 255);
   doc.text('No.', 18, currentY + 5.2);
   doc.text('Description of Goods', 25, currentY + 5.2);
-  doc.text('Qty / Unit', 145, currentY + 5.2, { align: 'right' });
+  doc.text('Qty', 145, currentY + 5.2, { align: 'right' });
   doc.text('Unit Price', 168, currentY + 5.2, { align: 'right' });
   doc.text('Amount', 192, currentY + 5.2, { align: 'right' });
 
@@ -586,11 +586,11 @@ export function generateInvoicePDF(shipment: Shipment, settings: SystemSettings)
     
     const symbol = getCurrencySymbol(shipment.currency);
 
-    // Qty / Unit
+    // Qty
     doc.setFont('courier', 'bold');
     doc.setFontSize(8.5);
     doc.setTextColor(71, 85, 105);
-    doc.text(`${item.qty} ${item.unit || 'pcs'}`, 145, currentY + 6.2, { align: 'right' });
+    doc.text(String(item.qty), 145, currentY + 6.2, { align: 'right' });
 
     // Unit Price
     doc.setFont('courier', 'normal');
@@ -656,7 +656,7 @@ export function generateInvoicePDF(shipment: Shipment, settings: SystemSettings)
   };
 
   const symbol = getCurrencySymbol(shipment.currency);
-  printSummaryRow('Total Items Qty:', `${shipment.totalQty} pcs`);
+  printSummaryRow('Total Items Qty:', String(shipment.totalQty));
   printSummaryRow('Subtotal Amount:', `${symbol} ${formatMoney(shipment.totalItemsAmount)}`);
   
   if (shipment.otherCharges > 0) {
@@ -718,7 +718,7 @@ export function generatePackingListPDF(shipment: Shipment, settings: SystemSetti
   doc.setTextColor(255, 255, 255);
   doc.text('No.', 18, currentY + 5.2);
   doc.text('Description of Goods', 25, currentY + 5.2);
-  doc.text('Qty / Unit', 115, currentY + 5.2, { align: 'right' });
+  doc.text('Qty', 115, currentY + 5.2, { align: 'right' });
   doc.text('No. of Boxes', 140, currentY + 5.2, { align: 'right' });
   doc.text('Net Weight', 166, currentY + 5.2, { align: 'right' });
   doc.text('Gross Weight', 192, currentY + 5.2, { align: 'right' });
@@ -762,11 +762,11 @@ export function generatePackingListPDF(shipment: Shipment, settings: SystemSetti
     const truncatedName = cleanName.length > 55 ? cleanName.substring(0, 52) + '...' : cleanName;
     doc.text(truncatedName, 25, currentY + 6.2);
     
-    // Qty / Unit
+    // Qty
     doc.setFont('courier', 'bold');
     doc.setFontSize(8.5);
     doc.setTextColor(71, 85, 105);
-    doc.text(`${item.qty} ${item.unit || 'pcs'}`, 115, currentY + 6.2, { align: 'right' });
+    doc.text(String(item.qty), 115, currentY + 6.2, { align: 'right' });
 
     // No. of Boxes
     doc.setFont('courier', 'normal');
@@ -829,7 +829,7 @@ export function generatePackingListPDF(shipment: Shipment, settings: SystemSetti
     summaryY += 5;
   };
 
-  printSummaryRow('Total Items Quantity:', `${shipment.totalQty} pcs`);
+  printSummaryRow('Total Items Quantity:', String(shipment.totalQty));
   printSummaryRow('Total Number of Boxes:', `${totalBoxes} Box(es)`);
   printSummaryRow('Total Net Weight:', `${shipment.totalWeight.toFixed(3)} kg`);
   

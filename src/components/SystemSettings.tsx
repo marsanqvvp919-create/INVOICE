@@ -623,7 +623,7 @@ function InvoiceLivePreview({
               <tr className="bg-slate-800 text-white font-bold">
                 <th className="py-2.5 px-2 pl-3 rounded-l">No.</th>
                 <th className="py-2.5 px-2">Description of Goods</th>
-                <th className="py-2.5 px-2 text-right">Qty / Unit</th>
+                <th className="py-2.5 px-2 text-right">Qty</th>
                 <th className="py-2.5 px-2 text-right">Unit Price</th>
                 <th className="py-2.5 px-2 text-right pr-3 rounded-r">Amount</th>
               </tr>
@@ -633,7 +633,7 @@ function InvoiceLivePreview({
                 <tr key={idx} className={`${idx % 2 === 1 ? 'bg-slate-50/60' : ''} border-b border-slate-100 hover:bg-slate-50/40 transition-colors`}>
                   <td className="py-3 px-2 pl-3 text-slate-400 font-mono">{idx + 1}</td>
                   <td className="py-3 px-2 font-semibold text-slate-800 leading-relaxed">{item.nameEn}</td>
-                  <td className="py-3 px-2 text-right font-mono font-bold text-slate-600">{item.qty} {item.unit}</td>
+                  <td className="py-3 px-2 text-right font-mono font-bold text-slate-600">{item.qty}</td>
                   <td className="py-3 px-2 text-right font-mono">{currencySymbol} {formatValue(item.price)}</td>
                   <td className="py-3 px-2 text-right pr-3 font-mono font-bold text-slate-800">{currencySymbol} {formatValue(item.total)}</td>
                 </tr>
