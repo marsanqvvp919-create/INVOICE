@@ -215,7 +215,7 @@ export default function StockManagement({
         expiryDate: directAddFields.expiryDate || '2040-12-31',
         quantity: directAddFields.quantity,
         purchasePrice: targetProduct.purchasePrice || 0,
-        purchaseCurrency: targetProduct.purchaseCurrency || 'USD',
+        purchaseCurrency: targetProduct.purchaseCurrency || 'JPY',
         notes: directAddFields.notes || '在庫管理画面からの初期直接入庫登録',
         operator: currentUser.name
       });

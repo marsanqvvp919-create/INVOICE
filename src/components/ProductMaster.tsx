@@ -73,7 +73,7 @@ export default function ProductMaster({
     unit: 'vial',
     hsCode: '3002.90',
     countryOfOrigin: 'Republic of Korea',
-    purchaseCurrency: 'USD' as 'USD' | 'KRW' | 'JPY' | 'EUR',
+    purchaseCurrency: 'JPY' as 'USD' | 'KRW' | 'JPY' | 'EUR',
     purchasePrice: 0,
     invoicePrice: 0,
     weight: 0.03, // in kg
@@ -99,7 +99,7 @@ export default function ProductMaster({
       unit: 'vial',
       hsCode: '3002.90',
       countryOfOrigin: 'Republic of Korea',
-      purchaseCurrency: 'USD',
+      purchaseCurrency: 'JPY',
       purchasePrice: 0,
       invoicePrice: 0,
       weight: 0.03,
@@ -142,7 +142,7 @@ export default function ProductMaster({
       unit: product.unit || '',
       hsCode: product.hsCode || '',
       countryOfOrigin: product.countryOfOrigin || '',
-      purchaseCurrency: product.purchaseCurrency || 'USD',
+      purchaseCurrency: product.purchaseCurrency || 'JPY',
       purchasePrice: typeof product.purchasePrice === 'number' && !isNaN(product.purchasePrice) ? product.purchasePrice : 0,
       invoicePrice: typeof product.invoicePrice === 'number' && !isNaN(product.invoicePrice) ? product.invoicePrice : 0,
       weight: typeof product.weight === 'number' && !isNaN(product.weight) ? product.weight : 0.03,
@@ -310,6 +310,40 @@ export default function ProductMaster({
       }
     });
 
+  // Helper to split CSV line respecting quotes
+  const parseCsvLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"' || char === "'") {
+        if (inQuotes && line[i + 1] === char) {
+          current += char;
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim().replace(/^"|"$/g, ''));
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim().replace(/^"|"$/g, ''));
+    return result;
+  };
+
+  const parseNumericValue = (val: any, fallback = 0): number => {
+    if (val === undefined || val === null) return fallback;
+    if (typeof val === 'number') return isNaN(val) ? fallback : val;
+    const cleaned = String(val).replace(/[^0-9.-]/g, '').trim();
+    if (!cleaned) return fallback;
+    const num = parseFloat(cleaned);
+    return isNaN(num) ? fallback : num;
+  };
+
   // CSV Import parser
   const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -318,60 +352,89 @@ export default function ProductMaster({
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target?.result as string;
-      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
       
       if (lines.length <= 1) {
         alert('CSVにヘッダー行以外の有効なデータが含まれていません。');
         return;
       }
 
-      const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+      const headers = parseCsvLine(lines[0]);
       const parsedData: any[] = [];
       const errorsList: { row: number; error: string }[] = [];
 
       for (let i = 1; i < lines.length; i++) {
-        const rowValues = lines[i].split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+        const rowValues = parseCsvLine(lines[i]);
         
-        if (rowValues.length < headers.length) {
-          errorsList.push({ row: i + 1, error: '列数が不足しています。' });
+        // Skip completely empty lines
+        if (rowValues.length === 0 || rowValues.every(v => !v)) {
           continue;
         }
 
-        const rowObj: any = {};
+        // Pad row values to ensure column L (index 11) and column M (index 12) are safely accessible
+        while (rowValues.length < 13) {
+          rowValues.push('');
+        }
+
+        const rowObj: Record<string, string> = {};
         headers.forEach((header, idx) => {
-          rowObj[header] = rowValues[idx] || '';
+          rowObj[header] = (rowValues[idx] || '').trim();
         });
 
+        // Column mapping:
+        // A列 (index 0): productId
+        // B列 (index 1): sku
+        // C列 (index 2): nameJa
+        // D列 (index 3): nameEn
+        // L列 (index 11 / 12列目): 仕入れ単価 (purchasePrice)
+        // M列 (index 12 / 13列目): インボイス記載単価 (invoicePrice)
+        const productId = (rowObj['productId'] || rowObj['商品id'] || rowObj['商品ID'] || rowObj['商品コード'] || rowObj['製剤id'] || rowValues[0] || '').trim();
+        const sku = (rowObj['sku'] || rowObj['SKU'] || rowObj['skuコード'] || rowObj['識別コード'] || rowValues[1] || '').trim();
+        const nameJa = (rowObj['nameJa'] || rowObj['製剤名'] || rowObj['商品名'] || rowObj['製剤名（日本語）'] || rowObj['製剤名(日本語)'] || rowObj['品名'] || rowValues[2] || '').trim();
+        const nameEn = (rowObj['nameEn'] || rowObj['製剤名（英語）'] || rowObj['製剤名(英語)'] || rowObj['英語品名'] || rowObj['英語名'] || rowValues[3] || '').trim();
+
+        // L列 (index 11): 仕入れ単価の抽出
+        const rawPurchasePrice = rowValues[11] !== undefined && rowValues[11] !== ''
+          ? rowValues[11]
+          : (rowObj['purchasePrice'] || rowObj['仕入れ単価'] || rowObj['仕入単価'] || rowObj['仕入れ価格'] || rowObj['仕入価格'] || '');
+        const purchasePrice = parseNumericValue(rawPurchasePrice, 0);
+
+        // M列 (index 12): インボイス記載単価の抽出
+        const rawInvoicePrice = rowValues[12] !== undefined && rowValues[12] !== ''
+          ? rowValues[12]
+          : (rowObj['invoicePrice'] || rowObj['インボイス記載単価'] || rowObj['インボイス単価'] || rowObj['インボイス価格'] || '');
+        const invoicePrice = parseNumericValue(rawInvoicePrice, 0);
+
         // Validation Rules
-        if (!rowObj['productId']) errorsList.push({ row: i + 1, error: '商品IDが空白です。' });
-        if (!rowObj['sku']) errorsList.push({ row: i + 1, error: 'SKUが空白です。' });
-        if (!rowObj['nameJa']) errorsList.push({ row: i + 1, error: '製剤名（日本語）が空白です。' });
-        if (!rowObj['nameEn']) errorsList.push({ row: i + 1, error: '製剤名（英語）が空白です。' });
+        if (!productId) errorsList.push({ row: i + 1, error: '商品ID（A列）が空白です。' });
+        if (!sku) errorsList.push({ row: i + 1, error: 'SKU（B列）が空白です。' });
+        if (!nameJa) errorsList.push({ row: i + 1, error: '製剤名（日本語・C列）が空白です。' });
+        if (!nameEn) errorsList.push({ row: i + 1, error: '製剤名（英語・D列）が空白です。' });
 
         parsedData.push({
           rowNum: i + 1,
-          productId: rowObj['productId'] || '',
-          sku: rowObj['sku'] || '',
-          nameJa: rowObj['nameJa'] || '',
-          nameEn: rowObj['nameEn'] || '',
-          manufacturer: rowObj['manufacturer'] || '',
-          spec: rowObj['spec'] || '',
-          content: Number(rowObj['content']) || 1,
-          unit: rowObj['unit'] || 'vial',
-          hsCode: rowObj['hsCode'] || '3002.90',
-          countryOfOrigin: rowObj['countryOfOrigin'] || 'Republic of Korea',
-          purchaseCurrency: (rowObj['purchaseCurrency'] || 'USD') as 'USD' | 'KRW' | 'JPY' | 'EUR',
-          purchasePrice: Number(rowObj['purchasePrice']) || 0,
-          invoicePrice: Number(rowObj['invoicePrice']) || 0,
-          weight: Number(rowObj['weight']) || 0.03,
-          boxSize: rowObj['boxSize'] || '10x10x10 cm',
-          lotNo: rowObj['lotNo'] || 'LOT-TEMP',
-          expiryDate: rowObj['expiryDate'] || new Date().toISOString().substring(0, 10),
-          currentStock: Number(rowObj['currentStock']) || 0,
-          minStock: Number(rowObj['minStock']) || 20,
-          temp: rowObj['temp'] || '2-8°C',
-          notes: rowObj['notes'] || '',
-          active: rowObj['active'] !== 'false'
+          productId,
+          sku,
+          nameJa,
+          nameEn,
+          manufacturer: rowObj['manufacturer'] || rowObj['製造元'] || rowObj['メーカー'] || rowValues[4] || '',
+          spec: rowObj['spec'] || rowObj['規格'] || rowObj['仕様'] || rowValues[5] || '',
+          content: parseNumericValue(rowObj['content'] || rowObj['容量'] || rowObj['入数'] || rowValues[6], 1),
+          unit: rowObj['unit'] || rowObj['単位'] || rowValues[7] || 'vial',
+          hsCode: rowObj['hsCode'] || rowObj['HSコード'] || rowValues[8] || '3002.90',
+          countryOfOrigin: rowObj['countryOfOrigin'] || rowObj['原産国'] || rowValues[9] || 'Republic of Korea',
+          purchaseCurrency: 'JPY', // CSV追加する製剤は全てJPYに統一
+          purchasePrice, // L列から抽出
+          invoicePrice,   // M列から抽出
+          weight: parseNumericValue(rowObj['weight'] || rowObj['重量'] || rowObj['単重'] || rowValues[13], 0.03),
+          boxSize: rowObj['boxSize'] || rowObj['箱サイズ'] || rowValues[14] || '10x10x10 cm',
+          lotNo: rowObj['lotNo'] || rowObj['ロット番号'] || rowObj['ロット'] || rowValues[15] || 'LOT-TEMP',
+          expiryDate: rowObj['expiryDate'] || rowObj['使用期限'] || rowObj['有効期限'] || rowValues[16] || new Date(Date.now() + 365*24*60*60*1000).toISOString().substring(0, 10),
+          currentStock: parseNumericValue(rowObj['currentStock'] || rowObj['現在庫'] || rowObj['在庫数'] || rowValues[17], 0),
+          minStock: parseNumericValue(rowObj['minStock'] || rowObj['最小在庫'] || rowObj['発注点'] || rowValues[18], 20),
+          temp: rowObj['temp'] || rowObj['保管温度'] || rowValues[19] || '2-8°C',
+          notes: rowObj['notes'] || rowObj['備考'] || rowValues[20] || '',
+          active: (rowObj['active'] || rowValues[21] || '') !== 'false'
         });
       }
 
@@ -421,7 +484,7 @@ export default function ProductMaster({
         `"${p.unit || ''}"`,
         `"${p.hsCode || ''}"`,
         `"${p.countryOfOrigin || ''}"`,
-        `"${p.purchaseCurrency || 'USD'}"`,
+        `"${p.purchaseCurrency || 'JPY'}"`,
         p.purchasePrice,
         p.invoicePrice,
         p.weight,
@@ -1102,11 +1165,18 @@ export default function ProductMaster({
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
               <div className="bg-slate-50 p-4 rounded-lg text-xs text-slate-600 border border-slate-200 space-y-2">
                 <p className="font-bold text-slate-800">【CSVフォーマット規定】</p>
-                <p>1行目はヘッダー行として、以下の項目名（英語）を設定してください：</p>
+                <p>1行目はヘッダー行として、以下の項目名を設定してください：</p>
                 <p className="font-mono bg-white p-2 rounded border border-slate-100 overflow-x-auto text-[10px]">
                   productId,sku,nameJa,nameEn,manufacturer,spec,content,unit,hsCode,countryOfOrigin,purchaseCurrency,purchasePrice,invoicePrice,weight,boxSize,lotNo,expiryDate,currentStock,minStock,temp,notes,active
                 </p>
-                <p className="text-amber-700 font-semibold">※productId, sku, nameJa, nameEn, invoicePriceは必須項目です。</p>
+                <div className="bg-indigo-50 border border-indigo-200 p-2.5 rounded text-indigo-900 font-medium space-y-1">
+                  <p>・<strong>L列（12列目）</strong>: <span className="underline font-bold">仕入れ単価 (purchasePrice)</span> として抽出されます。</p>
+                  <p>・<strong>M列（13列目）</strong>: <span className="underline font-bold">インボイス記載単価 (invoicePrice)</span> として抽出されます。</p>
+                </div>
+                <p className="text-amber-700 font-semibold">※productId (A列), sku (B列), nameJa (C列), nameEn (D列), invoicePrice (M列) は必須項目です。</p>
+                <p className="text-emerald-800 font-bold bg-emerald-50 p-2 rounded border border-emerald-200">
+                  ※CSV追加する製剤の通貨は全て「JPY（日本円）」に自動統一されます。
+                </p>
               </div>
 
               {/* Upload Dropzone */}
@@ -1158,7 +1228,8 @@ export default function ProductMaster({
                           <th className="px-3 py-2">行</th>
                           <th className="px-3 py-2">商品ID / SKU</th>
                           <th className="px-3 py-2">製剤名（日本語）</th>
-                          <th className="px-3 py-2 text-right">インボイス単価</th>
+                          <th className="px-3 py-2 text-right">仕入れ単価 (L列)</th>
+                          <th className="px-3 py-2 text-right">インボイス単価 (M列)</th>
                           <th className="px-3 py-2 text-right">現在庫数</th>
                           <th className="px-3 py-2">ロット番号</th>
                         </tr>
@@ -1172,7 +1243,8 @@ export default function ProductMaster({
                               <span className="text-slate-400 font-mono text-[9px] block">SKU: {row.sku}</span>
                             </td>
                             <td className="px-3 py-2 text-slate-800">{row.nameJa}</td>
-                            <td className="px-3 py-2 text-right font-mono font-bold text-blue-600">{row.invoicePrice} USD</td>
+                            <td className="px-3 py-2 text-right font-mono text-slate-700">¥{Number(row.purchasePrice).toLocaleString()} JPY</td>
+                            <td className="px-3 py-2 text-right font-mono font-bold text-blue-600">¥{Number(row.invoicePrice).toLocaleString()} JPY</td>
                             <td className="px-3 py-2 text-right font-mono font-bold">{row.currentStock}</td>
                             <td className="px-3 py-2 font-mono text-slate-600">{row.lotNo}</td>
                           </tr>

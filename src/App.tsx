@@ -199,9 +199,9 @@ export default function App() {
       const p1Ref = doc(collection(db, 'products'));
       const p2Ref = doc(collection(db, 'products'));
       const p3Ref = doc(collection(db, 'products'));
-      batch.set(p1Ref, { sku: 'BTLX-100', nameJa: 'ボツラックス 100U', nameEn: 'BOTULAX 100U', invoicePrice: 42.50, purchasePrice: 28.00, purchaseCurrency: 'USD', weight: 0.035, hsCode: '3002.90.3000', countryOfOrigin: 'South Korea', unit: 'vials', currentStock: 250, minStock: 50, lotNo: 'BTL-2026A', expiryDate: '2027-06-30', active: true });
-      batch.set(p2Ref, { sku: 'WSTX-050', nameJa: 'ウェルストックス 50U', nameEn: 'WELLSTOX 50U', invoicePrice: 35.00, purchasePrice: 20.00, purchaseCurrency: 'USD', weight: 0.030, hsCode: '3002.90.3000', countryOfOrigin: 'South Korea', unit: 'vials', currentStock: 180, minStock: 40, lotNo: 'WST-050-01', expiryDate: '2026-12-15', active: true });
-      batch.set(p3Ref, { sku: 'WSTX-100', nameJa: 'ウェルストックス 100U', nameEn: 'WELLSTOX 100U', invoicePrice: 58.00, purchasePrice: 35.00, purchaseCurrency: 'USD', weight: 0.035, hsCode: '3002.90.3000', countryOfOrigin: 'South Korea', unit: 'vials', currentStock: 300, minStock: 60, lotNo: 'WST-100-02', expiryDate: '2027-03-20', active: true });
+      batch.set(p1Ref, { sku: 'BTLX-100', nameJa: 'ボツラックス 100U', nameEn: 'BOTULAX 100U', invoicePrice: 6500, purchasePrice: 4200, purchaseCurrency: 'JPY', weight: 0.035, hsCode: '3002.90.3000', countryOfOrigin: 'South Korea', unit: 'vials', currentStock: 250, minStock: 50, lotNo: 'BTL-2026A', expiryDate: '2027-06-30', active: true });
+      batch.set(p2Ref, { sku: 'WSTX-050', nameJa: 'ウェルストックス 50U', nameEn: 'WELLSTOX 50U', invoicePrice: 5300, purchasePrice: 3000, purchaseCurrency: 'JPY', weight: 0.030, hsCode: '3002.90.3000', countryOfOrigin: 'South Korea', unit: 'vials', currentStock: 180, minStock: 40, lotNo: 'WST-050-01', expiryDate: '2026-12-15', active: true });
+      batch.set(p3Ref, { sku: 'WSTX-100', nameJa: 'ウェルストックス 100U', nameEn: 'WELLSTOX 100U', invoicePrice: 8800, purchasePrice: 5300, purchaseCurrency: 'JPY', weight: 0.035, hsCode: '3002.90.3000', countryOfOrigin: 'South Korea', unit: 'vials', currentStock: 300, minStock: 60, lotNo: 'WST-100-02', expiryDate: '2027-03-20', active: true });
 
       // Seed initial clinics
       const c1Ref = doc(collection(db, 'clinics'));
@@ -662,6 +662,7 @@ export default function App() {
   const handleAddProduct = async (product: Omit<Product, 'id' | 'createdAt'>) => {
     const docRef = await addDoc(collection(db, 'products'), {
       ...product,
+      purchaseCurrency: product.purchaseCurrency || 'JPY',
       createdAt: new Date().toISOString()
     });
 
@@ -1087,6 +1088,7 @@ export default function App() {
 
       batch.set(productRef, {
         ...p,
+        purchaseCurrency: 'JPY', // CSV追加する製剤は全てJPYに統一
         createdAt: new Date().toISOString()
       });
 

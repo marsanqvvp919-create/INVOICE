@@ -64,7 +64,7 @@ export default function StockInput({
     expiryDate: '2040-12-31',
     quantity: 100,
     purchasePrice: 0,
-    purchaseCurrency: 'USD',
+    purchaseCurrency: 'JPY',
     notes: ''
   });
 
