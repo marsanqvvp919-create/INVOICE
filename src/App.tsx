@@ -652,6 +652,24 @@ export default function App() {
 
     const chunkSize = 400;
 
+    // Helper: Ensure no field is undefined for Firestore, keeping empty values as empty strings ""
+    const sanitizeForFirestore = (record: Record<string, any>) => {
+      const sanitized: Record<string, any> = {};
+      for (const [key, val] of Object.entries(record)) {
+        if (val === undefined || val === null) {
+          sanitized[key] = '';
+        } else if (typeof val === 'string') {
+          sanitized[key] = val; // preserve as-is without stripping
+        } else {
+          sanitized[key] = val;
+        }
+      }
+      if (typeof sanitized.active !== 'boolean') {
+        sanitized.active = true;
+      }
+      return sanitized;
+    };
+
     if (replaceAll) {
       // Chunked deletion of all existing clinics
       for (let i = 0; i < snap.docs.length; i += chunkSize) {
@@ -661,14 +679,14 @@ export default function App() {
         await batch.commit();
       }
 
-      // Chunked insertion of new clinics
+      // Chunked insertion of new clinics with sanitized fields
       for (let i = 0; i < newClinics.length; i += chunkSize) {
         const chunk = newClinics.slice(i, i + chunkSize);
         const batch = writeBatch(db);
         chunk.forEach(c => {
           const ref = doc(collection(db, 'clinics'));
           batch.set(ref, {
-            ...c,
+            ...sanitizeForFirestore(c),
             createdAt: new Date().toISOString()
           });
         });
@@ -707,15 +725,18 @@ export default function App() {
       const idStripped = idRaw.replace(/^0+/, '');
       const nameKey = (c.name || '').trim().toLowerCase();
 
+      // Only match if ID or name is non-empty
       const matchedExisting = (idRaw && existingById.get(idRaw)) ||
                               (idStripped && existingById.get(idStripped)) ||
                               (nameKey && existingByName.get(nameKey));
+
+      const cleanRecord = sanitizeForFirestore(c);
 
       if (matchedExisting) {
         const docRef = doc(db, 'clinics', matchedExisting.id);
         writeOperations.push(batch => {
           batch.update(docRef, {
-            ...c,
+            ...cleanRecord,
             updatedAt: new Date().toISOString()
           });
         });
@@ -724,7 +745,7 @@ export default function App() {
         const docRef = doc(collection(db, 'clinics'));
         writeOperations.push(batch => {
           batch.set(docRef, {
-            ...c,
+            ...cleanRecord,
             createdAt: new Date().toISOString()
           });
         });

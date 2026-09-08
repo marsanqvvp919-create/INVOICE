@@ -39,7 +39,6 @@ export default function ClinicMaster({
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [replaceAllMode, setReplaceAllMode] = useState(false);
   const [csvPreview, setCsvPreview] = useState<any[]>([]);
-  const [csvErrors, setCsvErrors] = useState<{ row: number; error: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Form Fields State
@@ -200,29 +199,131 @@ export default function ClinicMaster({
     );
   });
 
-  // Helper to split CSV line respecting quotes
-  const parseCsvLine = (line: string): string[] => {
-    const result: string[] = [];
-    let current = '';
+  // Helper to clean and unquote CSV field values and collapse internal newlines
+  const cleanCsvField = (field: string): string => {
+    if (!field) return '';
+    let val = field.trim();
+    // Strip enclosing quotes (handles multiple enclosing levels e.g. """...""")
+    while ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1).trim();
+    }
+    // Replace internal newlines (\r\n, \r, \n) with a space and condense whitespace
+    val = val.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ');
+    return val.trim();
+  };
+
+  // Full RFC-4180 compliant CSV parser that properly preserves multiline cells across lines
+  const parseCsvToRecords = (csvText: string): string[][] => {
+    let text = csvText;
+    // Strip UTF-8 BOM if present
+    if (text.charCodeAt(0) === 0xFEFF) {
+      text = text.slice(1);
+    }
+
+    const records: string[][] = [];
+    let currentRecord: string[] = [];
+    let currentField = '';
     let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (char === '"' || char === "'") {
-        if (inQuotes && line[i + 1] === char) {
-          current += char;
-          i++;
+    let quoteChar = '"';
+    let i = 0;
+    const len = text.length;
+
+    while (i < len) {
+      const char = text[i];
+
+      if (inQuotes) {
+        if (char === quoteChar) {
+          // Escaped quote: "" or ''
+          if (i + 1 < len && text[i + 1] === quoteChar) {
+            currentField += char;
+            i += 2;
+          } else {
+            inQuotes = false;
+            i++;
+          }
         } else {
-          inQuotes = !inQuotes;
+          // Inside quoted cell: retain newlines and all characters
+          currentField += char;
+          i++;
         }
-      } else if (char === ',' && !inQuotes) {
-        result.push(current.trim().replace(/^"|"$/g, ''));
-        current = '';
       } else {
-        current += char;
+        if (char === '"' || char === "'") {
+          // Opening quote for empty or whitespace-only field
+          if (currentField.trim() === '') {
+            inQuotes = true;
+            quoteChar = char;
+            currentField = '';
+            i++;
+          } else {
+            currentField += char;
+            i++;
+          }
+        } else if (char === ',') {
+          currentRecord.push(cleanCsvField(currentField));
+          currentField = '';
+          i++;
+        } else if (char === '\r') {
+          if (i + 1 < len && text[i + 1] === '\n') {
+            i += 2;
+          } else {
+            i++;
+          }
+          currentRecord.push(cleanCsvField(currentField));
+          if (currentRecord.some(c => c.length > 0)) {
+            records.push(currentRecord);
+          }
+          currentRecord = [];
+          currentField = '';
+        } else if (char === '\n') {
+          i++;
+          currentRecord.push(cleanCsvField(currentField));
+          if (currentRecord.some(c => c.length > 0)) {
+            records.push(currentRecord);
+          }
+          currentRecord = [];
+          currentField = '';
+        } else {
+          currentField += char;
+          i++;
+        }
       }
     }
-    result.push(current.trim().replace(/^"|"$/g, ''));
-    return result;
+
+    if (currentField.length > 0 || currentRecord.length > 0) {
+      currentRecord.push(cleanCsvField(currentField));
+      if (currentRecord.some(c => c.length > 0)) {
+        records.push(currentRecord);
+      }
+    }
+
+    return records;
+  };
+
+  // Check if the first row is a header row
+  const isCsvHeaderRow = (record: string[]): boolean => {
+    if (!record || record.length === 0) return false;
+
+    const firstCol = (record[0] || '').trim();
+    // If first column is purely numeric or starts with CLN-, it is definitely a data row, not a header
+    if (/^[0-9]+$/.test(firstCol) || /^CLN-[0-9]+/i.test(firstCol)) {
+      return false;
+    }
+
+    const headerKeywords = [
+      'clinicid', 'クリニックid', 'クリニックｉｄ', 'クリニックコード', 'id', 'コード',
+      'name', 'clinicname', 'クリニック名', '顧客名', '顧客', '施設名', '医院名', '病院名',
+      'nameen', '英語表記', '英語名', '担当者', '院長名', '医師名', '住所', '電話番号', 'tel', 'phone', 'email'
+    ];
+
+    let matches = 0;
+    for (const cell of record) {
+      const clean = cell.toLowerCase().replace(/[\s\-_（）\(\)\/\\\:：]/g, '');
+      if (headerKeywords.some(kw => clean === kw || clean.includes(kw))) {
+        matches++;
+      }
+    }
+
+    return matches >= 2;
   };
 
   // Helper to decode CSV buffer supporting Shift-JIS (Windows-31J) & UTF-8
@@ -327,21 +428,16 @@ export default function ClinicMaster({
     reader.onload = (event) => {
       const buffer = event.target?.result as ArrayBuffer;
       const text = decodeCsvBuffer(buffer);
-      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
       
-      if (lines.length === 0) {
+      // Parse CSV into 2D records using the multiline-aware state machine
+      const records = parseCsvToRecords(text);
+      if (records.length === 0) {
         alert('CSVファイルが空です。');
         return;
       }
 
-      const rawHeaders = parseCsvLine(lines[0]);
-      
-      // Check if line 0 is a header row
-      const isHeaderRow = rawHeaders.some(h => {
-        const key = h.toLowerCase().replace(/[\s\-_]/g, '');
-        return headerAliasMap[key] !== undefined || key.includes('id') || key.includes('名') || key.includes('clinic');
-      });
-
+      const isHeaderRow = isCsvHeaderRow(records[0]);
+      const rawHeaders = isHeaderRow ? records[0] : [];
       const mappedHeaders = isHeaderRow 
         ? rawHeaders.map(h => {
             const key = h.toLowerCase().replace(/[\s\-_]/g, '');
@@ -350,12 +446,16 @@ export default function ClinicMaster({
         : [];
 
       const parsedData: any[] = [];
-      const errorsList: { row: number; error: string }[] = [];
       const startLine = isHeaderRow ? 1 : 0;
 
-      for (let i = startLine; i < lines.length; i++) {
-        const rowValues = parseCsvLine(lines[i]);
-        if (rowValues.length === 0 || (rowValues.length === 1 && !rowValues[0])) continue;
+      for (let i = startLine; i < records.length; i++) {
+        const rowValues = records[i];
+        // Skip completely empty lines where every cell is blank
+        if (!rowValues || rowValues.every(val => !val || val.trim() === '')) {
+          continue;
+        }
+
+        const actualCsvRowNum = i + 1;
 
         // Map columns if header row was present
         const rowObj: Record<string, string> = {};
@@ -387,12 +487,13 @@ export default function ClinicMaster({
         // Col 18: referralItem2 (S列: 紹介品目2)
         const is19ColFormat = rowValues.length >= 13;
 
+        // Read columns EXACTLY as provided in CSV - DO NOT substitute or pack blanks across columns!
         let clinicId = (rowObj['clinicId'] || (is19ColFormat ? rowValues[0] : '') || '').trim();
-        let name = (rowObj['name'] || (is19ColFormat ? rowValues[1] : '') || '').trim();
-        let nameEn = (rowObj['nameEn'] || (is19ColFormat ? rowValues[2] : '') || '').trim();
+        const name = (rowObj['name'] || (is19ColFormat ? rowValues[1] : '') || '').trim();
+        const nameEn = (rowObj['nameEn'] || (is19ColFormat ? rowValues[2] : '') || '').trim();
         const contactPerson = (rowObj['contactPerson'] || (is19ColFormat && rowValues[3] ? rowValues[3] : '') || '').trim();
         const doctorName = (rowObj['doctorName'] || (is19ColFormat && rowValues[4] ? rowValues[4] : '') || '').trim();
-        let doctorNameEn = (rowObj['doctorNameEn'] || (is19ColFormat && rowValues[5] ? rowValues[5] : '') || '').trim().replace(/^Dr\.?\s*/i, '');
+        const doctorNameEn = (rowObj['doctorNameEn'] || (is19ColFormat && rowValues[5] ? rowValues[5] : '') || '').trim().replace(/^Dr\.?\s*/i, '');
         const licenseUrl = (rowObj['licenseUrl'] || (is19ColFormat && rowValues[6] ? rowValues[6] : '') || '').trim();
         const paymentMethod = (rowObj['paymentMethod'] || (is19ColFormat && rowValues[7] ? rowValues[7] : '') || '').trim();
         const closingDay = (rowObj['closingDay'] || (is19ColFormat && rowValues[8] ? rowValues[8] : '') || '').trim();
@@ -401,55 +502,27 @@ export default function ClinicMaster({
         const email2 = (rowObj['email2'] || (is19ColFormat && rowValues[11] ? rowValues[11] : '') || '').trim();
         const phone = (rowObj['phone'] || (is19ColFormat && rowValues[12] ? rowValues[12] : '') || '').trim();
         const rawAddress = (rowObj['address'] || (is19ColFormat && rowValues[13] ? rowValues[13] : '') || '').trim();
-        let addressEn = (rowObj['addressEn'] || (is19ColFormat && rowValues[14] ? rowValues[14] : '') || '').trim();
+        const addressEn = (rowObj['addressEn'] || (is19ColFormat && rowValues[14] ? rowValues[14] : '') || '').trim();
         const referrer = (rowObj['referrer'] || (is19ColFormat && rowValues[15] ? rowValues[15] : '') || '').trim();
         const referralRate = (rowObj['referralRate'] || (is19ColFormat && rowValues[16] ? rowValues[16] : '') || '').trim();
         const referralItem1 = (rowObj['referralItem1'] || (is19ColFormat && rowValues[17] ? rowValues[17] : '') || '').trim();
         const referralItem2 = (rowObj['referralItem2'] || (is19ColFormat && rowValues[18] ? rowValues[18] : '') || '').trim();
 
-        // Auto-fill Clinic ID if blank
+        // Only assign auto-fallback ID if CSV completely lacks a clinicId
         if (!clinicId) {
           const autoNum = clinics.length + parsedData.length + 1;
           clinicId = `CLN-${String(autoNum).padStart(3, '0')}`;
         }
 
-        // Auto-fill Clinic Names if blank
-        if (!name && nameEn) {
-          name = nameEn;
-        } else if (!name && !nameEn) {
-          name = `未設定クリニック (${clinicId})`;
-          nameEn = `Clinic ${clinicId}`;
-        } else if (name && !nameEn) {
-          nameEn = name;
-        }
-
-        // Auto-extract zip, prefecture, and clean address
+        // Auto-extract zip and prefecture if present in address string, preserving address as-is
         const zipMatch = rawAddress.match(/〒?\s*([0-9]{3}-?[0-9]{4})/);
         const zip = rowObj['zip'] || (zipMatch ? zipMatch[1] : '');
-        const cleanAddress = rawAddress.replace(/^〒?\s*[0-9]{3}-?[0-9]{4}\s*/, '').trim();
-        const prefMatch = cleanAddress.match(/^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)/);
+        const prefMatch = rawAddress.match(/^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)/);
         const prefecture = rowObj['prefecture'] || (prefMatch ? prefMatch[1] : '');
-
-        if (!addressEn) {
-          const parts = [prefecture, rowObj['city'], cleanAddress, rowObj['building']].filter(Boolean);
-          addressEn = parts.length > 0 ? parts.join(', ') : (cleanAddress || rawAddress);
-        }
 
         // Parse Active boolean
         const activeVal = (rowObj['active'] || '').toLowerCase();
         const active = activeVal === 'false' || activeVal === '無効' || activeVal === '0' ? false : true;
-
-        // Collect extra info into notes if available
-        const extraNotesArr: string[] = [];
-        if (rowObj['notes']) extraNotesArr.push(rowObj['notes']);
-        if (paymentMethod) extraNotesArr.push(`支払方法: ${paymentMethod}`);
-        if (closingDay || paymentDay) extraNotesArr.push(`締め/支払: ${closingDay || '-'} / ${paymentDay || '-'}`);
-        if (referrer) extraNotesArr.push(`紹介者: ${referrer}`);
-        if (referralRate) extraNotesArr.push(`紹介手数料率: ${referralRate}%`);
-        if (referralItem1 || referralItem2) extraNotesArr.push(`紹介品目: ${[referralItem1, referralItem2].filter(Boolean).join(', ')}`);
-        if (email2 && email2 !== email1) extraNotesArr.push(`サブメール: ${email2}`);
-        if (licenseUrl) extraNotesArr.push(`免許等URL: ${licenseUrl}`);
-        const notes = extraNotesArr.join(' | ');
 
         // Check matching with existing clinic
         const idRaw = clinicId.toUpperCase();
@@ -462,16 +535,16 @@ export default function ClinicMaster({
           const cName = (c.name || '').toLowerCase();
           return (idRaw && cId === idRaw) ||
                  (idStripped && cIdStripped === idStripped) ||
-                 (nameLower && cName === nameLower);
+                 (nameLower && cName && cName === nameLower);
         });
 
         parsedData.push({
-          rowNum: i + 1,
+          rowNum: actualCsvRowNum,
           isUpdate: !!existingMatch,
           matchedClinicId: existingMatch?.clinicId,
           clinicId,
-          name,
-          nameEn,
+          name, // exact CSV value, blank if blank
+          nameEn, // exact CSV value, blank if blank (never filled with Japanese name)
           corporationName: rowObj['corporationName'] || '',
           contactPerson,
           doctorName,
@@ -479,12 +552,12 @@ export default function ClinicMaster({
           zip,
           prefecture,
           city: rowObj['city'] || '',
-          address: cleanAddress || rawAddress,
+          address: rawAddress, // exact CSV address as-is
           building: rowObj['building'] || '',
-          addressEn,
+          addressEn, // exact CSV English address as-is (never filled with Japanese address)
           phone,
-          email: email1 || email2,
-          email2,
+          email: email1, // exact CSV Email 1
+          email2, // exact CSV Email 2
           licenseUrl,
           paymentMethod,
           closingDay,
@@ -493,40 +566,52 @@ export default function ClinicMaster({
           referralRate,
           referralItem1,
           referralItem2,
-          notes,
+          notes: rowObj['notes'] || '',
           active
         });
       }
 
       setCsvPreview(parsedData);
-      setCsvErrors(errorsList);
     };
     reader.readAsArrayBuffer(file);
   };
 
   const handleConfirmImport = async () => {
-    if (csvErrors.length > 0) {
-      alert('エラー行を修正してからインポートしてください。');
+    if (csvPreview.length === 0) {
+      alert('インポート対象のデータがありません。');
       return;
     }
 
     try {
-      // Filter out meta values and save
-      const cleanData = csvPreview.map(({ rowNum, isUpdate, matchedClinicId, ...rest }) => rest);
-      await onImportClinics(cleanData, replaceAllMode);
+      // Ensure all fields are sanitized strings or booleans, NEVER undefined/null for Firestore
+      const cleanData = csvPreview.map(({ rowNum, isUpdate, matchedClinicId, ...rest }) => {
+        const sanitized: Record<string, any> = {};
+        for (const [key, val] of Object.entries(rest)) {
+          if (val === undefined || val === null) {
+            sanitized[key] = '';
+          } else if (typeof val === 'string') {
+            sanitized[key] = val; // preserve exact string including empty strings ""
+          } else {
+            sanitized[key] = val;
+          }
+        }
+        if (typeof sanitized.active !== 'boolean') sanitized.active = true;
+        return sanitized;
+      });
+
+      await onImportClinics(cleanData as any, replaceAllMode);
       setIsCsvImportOpen(false);
       setCsvPreview([]);
-      setCsvErrors([]);
       const updateCount = csvPreview.filter(p => p.isUpdate).length;
       const newCount = csvPreview.length - updateCount;
       if (replaceAllMode) {
-        alert(`クリニックマスタ全置換インポートが完了しました（全 ${cleanData.length} 件）`);
+        alert(`クリニックマスタ全置換インポートが完了しました（全 ${cleanData.length} 件をそのまま反映しました）`);
       } else {
         alert(`クリニックマスタのCSV反映が完了しました（全 ${cleanData.length} 件：既存更新 ${updateCount} 件、新規追加 ${newCount} 件）`);
       }
     } catch (err) {
-      console.error(err);
-      alert('インポート中にエラーが発生しました。');
+      console.error('CSV import error:', err);
+      alert('インポート中にエラーが発生しました。コンソールログを確認してください。');
     }
   };
 
@@ -995,7 +1080,6 @@ export default function ClinicMaster({
                 onClick={() => {
                   setIsCsvImportOpen(false);
                   setCsvPreview([]);
-                  setCsvErrors([]);
                 }} 
                 className="text-slate-400 hover:text-slate-600 cursor-pointer"
               >
@@ -1057,60 +1141,44 @@ export default function ClinicMaster({
                 />
               </div>
 
-              {/* Errors list */}
-              {csvErrors.length > 0 && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-xs text-red-800 space-y-2">
-                  <h4 className="font-bold flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4 text-red-600" />
-                    <span>CSVファイルにバリデーションエラーが見つかりました ({csvErrors.length}件)</span>
-                  </h4>
-                  <ul className="list-disc pl-5 space-y-1 text-red-700 max-h-40 overflow-y-auto">
-                    {csvErrors.map((err, idx) => (
-                      <li key={idx}><strong>{err.row}行目:</strong> {err.error}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
               {/* CSV Preview */}
               {csvPreview.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap justify-between items-center gap-2">
                     <h4 className="text-xs font-bold text-slate-800 flex items-center gap-2">
-                      <CheckCircle className="w-4 h-4 text-emerald-600" />
+                      <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
                       <span>インポートプレビュー (全 {csvPreview.length} 件)</span>
                       <span className="text-[10px] bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-bold border border-blue-200">
                         既存更新: {csvPreview.filter(r => r.isUpdate).length} 件
                       </span>
                       <span className="text-[10px] bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded font-bold border border-emerald-200">
-                        新規登録: {csvPreview.filter(r => !r.isUpdate).length} 件
+                        新規追加: {csvPreview.filter(r => !r.isUpdate).length} 件
                       </span>
                     </h4>
-                    {csvErrors.length === 0 && (
-                      <span className="text-[10px] bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded font-bold">
-                        エラーなし：インポート可能です
-                      </span>
-                    )}
+                    <span className="text-[11px] text-slate-500">
+                      ※空欄項目は他列で詰めず、そのまま空白として安全にFirestoreに保存されます
+                    </span>
                   </div>
                   
-                  <div className="border border-slate-200 rounded-lg overflow-hidden max-h-64 overflow-y-auto">
+                  <div className="border border-slate-200 rounded-lg overflow-hidden max-h-72 overflow-y-auto">
                     <table className="w-full text-left border-collapse text-[10px]">
                       <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 font-bold text-slate-600 tracking-wider">
-                          <th className="px-3 py-2 text-center">種別</th>
+                        <tr className="bg-slate-50 border-b border-slate-200 font-bold text-slate-600 tracking-wider sticky top-0 z-10 shadow-xs">
+                          <th className="px-3 py-2 text-center">状態</th>
                           <th className="px-3 py-2">行</th>
                           <th className="px-3 py-2">クリニックID</th>
                           <th className="px-3 py-2">顧客名 / クリニック名</th>
                           <th className="px-3 py-2">英語表記</th>
                           <th className="px-3 py-2">院長名 (日/英)</th>
                           <th className="px-3 py-2">電話番号</th>
+                          <th className="px-3 py-2">クリニック住所</th>
                           <th className="px-3 py-2">英語住所</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 font-medium">
                         {csvPreview.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50/50">
-                            <td className="px-3 py-2 text-center">
+                          <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-3 py-2 text-center whitespace-nowrap">
                               {row.isUpdate ? (
                                 <span className="bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded text-[9px] font-bold">
                                   既存更新
@@ -1123,13 +1191,28 @@ export default function ClinicMaster({
                             </td>
                             <td className="px-3 py-2 font-mono text-slate-400">{row.rowNum}</td>
                             <td className="px-3 py-2 font-bold font-mono text-slate-800">{row.clinicId}</td>
-                            <td className="px-3 py-2 text-slate-800 font-medium">{row.name}</td>
-                            <td className="px-3 py-2 text-slate-600">{row.nameEn}</td>
-                            <td className="px-3 py-2 text-slate-600">
-                              {row.doctorName || '-'}{row.doctorNameEn ? ` (${row.doctorNameEn})` : ''}
+                            <td className="px-3 py-2 text-slate-800 font-medium">
+                              {row.name || <span className="text-slate-300 italic text-[10px]">(空白)</span>}
                             </td>
-                            <td className="px-3 py-2 font-mono text-slate-500">{row.phone || '-'}</td>
-                            <td className="px-3 py-2 text-slate-500 truncate max-w-xs" title={row.addressEn}>{row.addressEn || '-'}</td>
+                            <td className="px-3 py-2 text-slate-600">
+                              {row.nameEn || <span className="text-slate-300 italic text-[10px]">(空白)</span>}
+                            </td>
+                            <td className="px-3 py-2 text-slate-600">
+                              {row.doctorName || row.doctorNameEn ? (
+                                `${row.doctorName || '-'}${row.doctorNameEn ? ` (${row.doctorNameEn})` : ''}`
+                              ) : (
+                                <span className="text-slate-300 italic text-[10px]">-</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 font-mono text-slate-500">
+                              {row.phone || <span className="text-slate-300 italic text-[10px]">-</span>}
+                            </td>
+                            <td className="px-3 py-2 text-slate-600 max-w-xs truncate" title={row.address}>
+                              {row.address || <span className="text-slate-300 italic text-[10px]">(空白)</span>}
+                            </td>
+                            <td className="px-3 py-2 text-slate-500 max-w-xs truncate" title={row.addressEn}>
+                              {row.addressEn || <span className="text-slate-300 italic text-[10px]">(空白)</span>}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -1145,7 +1228,7 @@ export default function ClinicMaster({
               <div className="text-[11px] text-slate-500">
                 {csvPreview.length > 0 && (
                   <span>
-                    反映予定: 既存クリニック {csvPreview.filter(r => r.isUpdate).length} 件の更新、新規クリニック {csvPreview.filter(r => !r.isUpdate).length} 件の追加
+                    全 <strong className="text-slate-800">{csvPreview.length}</strong> 件のレコード（空欄項目もそのまま空白としてFirestoreに安全に反映されます）
                   </span>
                 )}
               </div>
@@ -1155,7 +1238,6 @@ export default function ClinicMaster({
                   onClick={() => {
                     setIsCsvImportOpen(false);
                     setCsvPreview([]);
-                    setCsvErrors([]);
                   }}
                   className="bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded text-xs font-semibold hover:bg-slate-50 cursor-pointer"
                 >
@@ -1163,11 +1245,11 @@ export default function ClinicMaster({
                 </button>
                 <button
                   type="button"
-                  disabled={csvPreview.length === 0 || csvErrors.length > 0}
+                  disabled={csvPreview.length === 0}
                   onClick={handleConfirmImport}
-                  className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 text-white disabled:text-slate-400 px-5 py-2 rounded text-xs font-bold cursor-pointer transition-colors"
+                  className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 text-white disabled:text-slate-400 px-5 py-2 rounded text-xs font-bold cursor-pointer transition-colors shadow-xs"
                 >
-                  {replaceAllMode ? '全置換インポートを実行' : 'CSVの変更を反映する'}
+                  {replaceAllMode ? '全置換インポートを実行' : 'CSVのデータをそのまま反映する'}
                 </button>
               </div>
             </div>
