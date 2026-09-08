@@ -1,5 +1,5 @@
 import { Clinic, Product, Shipment, ShipmentItem, Warehouse, SystemSettings } from '../types';
-import { SAMPLE_CLINICS_MASTER, SAMPLE_PRODUCTS_MASTER } from '../data/sampleClinicProductData';
+import { SAMPLE_CLINICS_MASTER } from '../data/sampleClinicProductData';
 
 export interface ParsedCsvRow {
   rawRowIndex: number;
@@ -172,6 +172,7 @@ export function parseCsvText(text: string): string[][] {
  */
 function normalizeStr(str: string): string {
   return (str || '')
+    .normalize('NFKC')
     .toLowerCase()
     .replace(/[\s\u3000]+/g, '') // remove all half-width and full-width spaces
     .replace(/[（\(][^\)]*[）\)]/g, '') // remove parenthesized details
@@ -272,13 +273,14 @@ export function findMatchingClinic(
 }
 
 /**
- * Find product in user's DB or fallback sample master with strict tiered matching
+ * Find product strictly in user's DB (dbProducts) with tiered precision.
+ * NEVER references sample presets or hardcoded values.
  */
 export function findMatchingProduct(
   productName: string, 
   dbProducts: Product[]
-): { product: Product | null; source: 'FIRESTORE' | 'MASTER_PRESET' | 'UNMATCHED' } {
-  if (!productName) return { product: null, source: 'UNMATCHED' };
+): { product: Product | null; source: 'FIRESTORE' | 'UNMATCHED' } {
+  if (!productName || !productName.trim()) return { product: null, source: 'UNMATCHED' };
 
   const cleanName = productName.trim();
   const cleanLower = cleanName.toLowerCase();
@@ -288,139 +290,62 @@ export function findMatchingProduct(
   // -------------------------------------------------------------
   // Tier 1: Exact case-insensitive matches (Highest confidence)
   // -------------------------------------------------------------
-  // 1a. In user's Firestore products
   const exactDb = dbProducts.find(p => 
-    p.nameEn.trim().toLowerCase() === cleanLower ||
-    p.nameJa.trim().toLowerCase() === cleanLower ||
-    p.sku.trim().toLowerCase() === cleanLower
+    (p.nameEn && p.nameEn.trim().toLowerCase() === cleanLower) ||
+    (p.nameJa && p.nameJa.trim().toLowerCase() === cleanLower) ||
+    (p.sku && p.sku.trim().toLowerCase() === cleanLower) ||
+    (p.productId && p.productId.trim().toLowerCase() === cleanLower)
   );
   if (exactDb) return { product: exactDb, source: 'FIRESTORE' };
-
-  // 1b. In Sample Products Master preset
-  const exactPreset = SAMPLE_PRODUCTS_MASTER.find(p => 
-    p.nameEn.toLowerCase() === cleanLower ||
-    p.nameJa.toLowerCase() === cleanLower ||
-    p.sku.toLowerCase() === cleanLower
-  );
-  if (exactPreset) {
-    return {
-      product: { id: `preset_${exactPreset.productId}`, ...exactPreset, createdAt: new Date().toISOString() },
-      source: 'MASTER_PRESET'
-    };
-  }
 
   // -------------------------------------------------------------
   // Tier 2: Canonical Exact Matches (Resolves "No.1" vs "1" etc.)
   // -------------------------------------------------------------
-  // 2a. In user's Firestore products
   const canonDb = dbProducts.find(p => {
-    // Ignore corrupted/empty short single character names from matching
-    if (p.nameEn.trim().length <= 1 && cleanLower.length > 2) return false;
-    return canonicalProductKey(p.nameEn) === canonTarget || 
-           canonicalProductKey(p.nameJa) === canonTarget ||
-           canonicalProductKey(p.sku) === canonTarget;
+    if ((!p.nameEn || p.nameEn.trim().length <= 1) && cleanLower.length > 2) return false;
+    return (p.nameEn && canonicalProductKey(p.nameEn) === canonTarget) || 
+           (p.nameJa && canonicalProductKey(p.nameJa) === canonTarget) ||
+           (p.sku && canonicalProductKey(p.sku) === canonTarget);
   });
   if (canonDb) return { product: canonDb, source: 'FIRESTORE' };
-
-  // 2b. In Sample Products Master preset
-  const canonPreset = SAMPLE_PRODUCTS_MASTER.find(p => 
-    canonicalProductKey(p.nameEn) === canonTarget || 
-    canonicalProductKey(p.nameJa) === canonTarget ||
-    canonicalProductKey(p.sku) === canonTarget
-  );
-  if (canonPreset) {
-    return {
-      product: { id: `preset_${canonPreset.productId}`, ...canonPreset, createdAt: new Date().toISOString() },
-      source: 'MASTER_PRESET'
-    };
-  }
 
   // -------------------------------------------------------------
   // Tier 3: Normalized Exact Matches (Symbols/spaces removed)
   // -------------------------------------------------------------
-  // 3a. In user's Firestore products
   const normExactDb = dbProducts.find(p => {
-    if (p.nameEn.trim().length <= 1 && cleanLower.length > 2) return false;
-    return normalizeStr(p.nameEn) === normalized || 
-           normalizeStr(p.nameJa) === normalized ||
-           normalizeStr(p.sku) === normalized;
+    if ((!p.nameEn || p.nameEn.trim().length <= 1) && cleanLower.length > 2) return false;
+    return (p.nameEn && normalizeStr(p.nameEn) === normalized) || 
+           (p.nameJa && normalizeStr(p.nameJa) === normalized) ||
+           (p.sku && normalizeStr(p.sku) === normalized);
   });
   if (normExactDb) return { product: normExactDb, source: 'FIRESTORE' };
 
-  // 3b. In Sample Products Master preset
-  const normExactPreset = SAMPLE_PRODUCTS_MASTER.find(p => 
-    normalizeStr(p.nameEn) === normalized || 
-    normalizeStr(p.nameJa) === normalized ||
-    normalizeStr(p.sku) === normalized
-  );
-  if (normExactPreset) {
-    return {
-      product: { id: `preset_${normExactPreset.productId}`, ...normExactPreset, createdAt: new Date().toISOString() },
-      source: 'MASTER_PRESET'
-    };
-  }
-
   // -------------------------------------------------------------
-  // Tier 4: Safe Substring / Fuzzy match with strict thresholds
-  // NOTE: NEVER allow short strings (< 4 chars) to match via includes!
-  // This prevents garbage records like "1" from matching "The Chaeum premium No.1"
+  // Tier 4: Safe Substring / Fuzzy match with strict thresholds against dbProducts
   // -------------------------------------------------------------
-  if (normalized.length >= 4) {
-    // Check Firestore
+  if (normalized.length >= 3) {
     let bestDbMatch: { product: Product; score: number } | null = null;
     for (const p of dbProducts) {
-      if (!p.nameEn || p.nameEn.trim().length < 4) continue;
-      const pNormEn = normalizeStr(p.nameEn);
+      const pNormEn = normalizeStr(p.nameEn || '');
       const pNormJa = normalizeStr(p.nameJa || '');
+      const pNormSku = normalizeStr(p.sku || '');
       
       const checkCandidate = (candNorm: string) => {
-        if (candNorm.length < 4) return 0;
+        if (candNorm.length < 3) return 0;
         if (candNorm === normalized) return 1.0;
         if (candNorm.includes(normalized)) return normalized.length / candNorm.length;
         if (normalized.includes(candNorm)) return candNorm.length / normalized.length;
         return 0;
       };
 
-      const score = Math.max(checkCandidate(pNormEn), checkCandidate(pNormJa));
-      if (score >= 0.75) {
+      const score = Math.max(checkCandidate(pNormEn), checkCandidate(pNormJa), checkCandidate(pNormSku));
+      if (score >= 0.70) {
         if (!bestDbMatch || score > bestDbMatch.score) {
           bestDbMatch = { product: p, score };
         }
       }
     }
     if (bestDbMatch) return { product: bestDbMatch.product, source: 'FIRESTORE' };
-
-    // Check Sample Master Preset
-    let bestPresetMatch: { preset: typeof SAMPLE_PRODUCTS_MASTER[0]; score: number } | null = null;
-    for (const p of SAMPLE_PRODUCTS_MASTER) {
-      const pNormEn = normalizeStr(p.nameEn);
-      const pNormJa = normalizeStr(p.nameJa || '');
-
-      const checkCandidate = (candNorm: string) => {
-        if (candNorm.length < 4) return 0;
-        if (candNorm === normalized) return 1.0;
-        if (candNorm.includes(normalized)) return normalized.length / candNorm.length;
-        if (normalized.includes(candNorm)) return candNorm.length / normalized.length;
-        return 0;
-      };
-
-      const score = Math.max(checkCandidate(pNormEn), checkCandidate(pNormJa));
-      if (score >= 0.75) {
-        if (!bestPresetMatch || score > bestPresetMatch.score) {
-          bestPresetMatch = { preset: p, score };
-        }
-      }
-    }
-    if (bestPresetMatch) {
-      return {
-        product: { 
-          id: `preset_${bestPresetMatch.preset.productId}`, 
-          ...bestPresetMatch.preset, 
-          createdAt: new Date().toISOString() 
-        },
-        source: 'MASTER_PRESET'
-      };
-    }
   }
 
   return { product: null, source: 'UNMATCHED' };
@@ -583,7 +508,15 @@ export function parseShippingCsv(
       const matchedProd = findMatchingProduct(colProductVal, dbProducts);
       const prodObj = matchedProd.product;
 
-      const unitPrice = prodObj ? (prodObj.invoicePrice || 5000) : 5000;
+      // 価格はDB（dbProducts）のみを参照。未登録製剤やプリセットからの架空単価（5,000円等）は一切使用しない
+      let unitPrice = 0;
+      if (prodObj) {
+        if (typeof prodObj.invoicePrice === 'number' && !isNaN(prodObj.invoicePrice)) {
+          unitPrice = prodObj.invoicePrice;
+        } else if (typeof prodObj.purchasePrice === 'number' && !isNaN(prodObj.purchasePrice)) {
+          unitPrice = prodObj.purchasePrice;
+        }
+      }
       const unitWeight = prodObj ? (prodObj.weight || 0.04) : 0.04;
       const sku = prodObj ? prodObj.sku : `SKU-${normalizeStr(colProductVal).substring(0, 8).toUpperCase()}`;
       const nameEn = prodObj ? prodObj.nameEn : colProductVal;
@@ -617,8 +550,10 @@ export function parseShippingCsv(
       currentAlloc.totalAmount += lineAmount;
       currentAlloc.totalWeight = parseFloat((currentAlloc.totalWeight + lineWeight).toFixed(3));
 
-      if (matchedProd.source === 'UNMATCHED') {
-        currentAlloc.warnings.push(`製剤「${colProductVal}」がデータベースに未登録です。`);
+      if (matchedProd.source === 'UNMATCHED' || !prodObj) {
+        currentAlloc.warnings.push(`製剤「${colProductVal}」はデータベース未登録のため単価が取得できません（0円）。製剤マスタで登録してください。`);
+      } else if (unitPrice === 0) {
+        currentAlloc.warnings.push(`製剤「${prodObj.nameJa || prodObj.nameEn}」のDBインボイス単価が0円として設定されています。`);
       }
     }
   }

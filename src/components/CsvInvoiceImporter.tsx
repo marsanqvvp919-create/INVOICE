@@ -1598,9 +1598,9 @@ export default function CsvInvoiceImporter({
                               <div className="font-bold text-white flex items-center gap-1.5">
                                 <span>{it.nameEn}</span>
                                 {it.isProductDbMatched ? (
-                                  <span className="text-[9px] px-1 rounded bg-emerald-500/10 text-emerald-400">DB</span>
+                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 font-semibold border border-emerald-500/20">DB参照</span>
                                 ) : (
-                                  <span className="text-[9px] px-1 rounded bg-amber-500/10 text-amber-400">Preset</span>
+                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 font-semibold border border-rose-500/30">DB未登録 (0円)</span>
                                 )}
                               </div>
                               <div className="text-[10px] text-slate-400">{it.nameJa}</div>
