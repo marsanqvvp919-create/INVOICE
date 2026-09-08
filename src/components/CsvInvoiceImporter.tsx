@@ -1333,7 +1333,24 @@ export default function CsvInvoiceImporter({
           <div className="space-y-3">
             {filteredAllocations.map((alloc, idx) => {
               const isSelected = selectedAllocIds.has(alloc.id);
-              const isIncomplete = alloc.clinicValidation.isIncomplete;
+
+              const clinicNameEnVal = alloc.matchedClinic?.nameEn || (alloc.clinicValidation?.hasNameEn ? alloc.clinicNameCsv : '');
+              const doctorEnVal = alloc.doctorNameEnFromDb || alloc.matchedClinic?.doctorNameEn || '';
+              const phoneVal = alloc.matchedClinic?.phone || '';
+              const addressEnVal = alloc.matchedClinic?.addressEn || '';
+
+              const isNameEnValid = Boolean(alloc.clinicValidation?.hasNameEn ?? (clinicNameEnVal && clinicNameEnVal.trim()));
+              const isDoctorValid = Boolean(alloc.clinicValidation?.hasDoctorNameEn ?? (doctorEnVal && doctorEnVal.trim()));
+              const isPhoneValid = Boolean(alloc.clinicValidation?.hasPhone ?? (phoneVal && phoneVal.trim()));
+              const isAddressValid = Boolean(alloc.clinicValidation?.hasAddressEn ?? (addressEnVal && addressEnVal.trim()));
+
+              const missingLabels: string[] = [];
+              if (!isNameEnValid) missingLabels.push('クリニック名英語表記');
+              if (!isDoctorValid) missingLabels.push('医師名英語表記');
+              if (!isPhoneValid) missingLabels.push('電話番号');
+              if (!isAddressValid) missingLabels.push('インボイス用英語住所');
+
+              const isIncomplete = missingLabels.length > 0;
 
               return (
                 <div
@@ -1356,7 +1373,7 @@ export default function CsvInvoiceImporter({
                         <span>
                           【警告アラート】インボイス作成用データ不十分:
                           <span className="text-white font-black ml-1.5 underline decoration-rose-400">
-                            {alloc.clinicValidation.missingFieldLabels.join('、')}
+                            {missingLabels.join('、')}
                           </span>
                           が欠けています
                         </span>
@@ -1418,7 +1435,7 @@ export default function CsvInvoiceImporter({
                           {isIncomplete ? (
                             <span className="text-[9px] px-2 py-0.5 rounded bg-rose-500/25 text-rose-300 border border-rose-500/50 font-black flex items-center gap-1 shadow-xs">
                               <AlertTriangle className="w-3 h-3 text-rose-400" />
-                              データ不十分 ({alloc.clinicValidation.missingFieldLabels.join('・')} 欠落)
+                              データ不十分 ({missingLabels.join('・')} 欠落)
                             </span>
                           ) : alloc.isDbMatched ? (
                             <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 font-bold flex items-center gap-1">
@@ -1444,8 +1461,8 @@ export default function CsvInvoiceImporter({
                       {/* Recipient note */}
                       <div className="text-right hidden sm:block">
                         <div className="text-slate-400 text-[10px]">宛名（医師名）</div>
-                        <div className={`font-bold font-mono ${alloc.clinicValidation.hasDoctorNameEn ? 'text-slate-200' : 'text-rose-400 font-black'}`}>
-                          {alloc.doctorNameEnFromDb || alloc.matchedClinic?.doctorNameEn || '⚠️ 未入力'}
+                        <div className={`font-bold font-mono ${isDoctorValid ? 'text-slate-200' : 'text-rose-400 font-black'}`}>
+                          {doctorEnVal || '⚠️ 未入力'}
                         </div>
                         <div className="text-[9px] text-slate-500">
                           {alloc.isDbMatched ? 'マスタ/手動入力参照' : `CSV B列「${alloc.csvIgnoredRecipient || '未指定'}」は無視`}
@@ -1495,15 +1512,15 @@ export default function CsvInvoiceImporter({
                   <div className="bg-slate-950/80 px-3.5 py-2 border-b border-slate-800/80 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-[11px]">
                     {/* Field 1: Clinic Name En */}
                     <div className={`p-1.5 px-2 rounded-lg border flex items-center justify-between gap-2 ${
-                      alloc.clinicValidation.hasNameEn ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
+                      isNameEnValid ? 'bg-slate-900/90 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
                     }`}>
                       <div className="truncate min-w-0">
                         <span className="text-[9px] text-slate-400 block font-medium">① 英語クリニック名</span>
-                        <span className={`font-mono font-bold truncate block ${alloc.clinicValidation.hasNameEn ? 'text-white' : 'text-rose-300'}`}>
-                          {alloc.matchedClinic?.nameEn || (alloc.clinicValidation.hasNameEn ? alloc.clinicNameCsv : '⚠️ 未入力')}
+                        <span className={`font-mono font-bold truncate block ${isNameEnValid ? 'text-white' : 'text-rose-300'}`}>
+                          {clinicNameEnVal || alloc.clinicNameCsv || '⚠️ 未入力'}
                         </span>
                       </div>
-                      {alloc.clinicValidation.hasNameEn ? (
+                      {isNameEnValid ? (
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                       ) : (
                         <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-black text-[9px] shrink-0">欠落</span>
@@ -1512,15 +1529,15 @@ export default function CsvInvoiceImporter({
 
                     {/* Field 2: Doctor Name En */}
                     <div className={`p-1.5 px-2 rounded-lg border flex items-center justify-between gap-2 ${
-                      alloc.clinicValidation.hasDoctorNameEn ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
+                      isDoctorValid ? 'bg-slate-900/90 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
                     }`}>
                       <div className="truncate min-w-0">
                         <span className="text-[9px] text-slate-400 block font-medium">② 医師名（英語・Dr.不要）</span>
-                        <span className={`font-mono font-bold truncate block ${alloc.clinicValidation.hasDoctorNameEn ? 'text-white' : 'text-rose-300'}`}>
-                          {alloc.doctorNameEnFromDb || alloc.matchedClinic?.doctorNameEn || '⚠️ 未入力'}
+                        <span className={`font-mono font-bold truncate block ${isDoctorValid ? 'text-white' : 'text-rose-300'}`}>
+                          {doctorEnVal || '⚠️ 未入力'}
                         </span>
                       </div>
-                      {alloc.clinicValidation.hasDoctorNameEn ? (
+                      {isDoctorValid ? (
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                       ) : (
                         <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-black text-[9px] shrink-0">欠落</span>
@@ -1529,15 +1546,15 @@ export default function CsvInvoiceImporter({
 
                     {/* Field 3: Phone */}
                     <div className={`p-1.5 px-2 rounded-lg border flex items-center justify-between gap-2 ${
-                      alloc.clinicValidation.hasPhone ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
+                      isPhoneValid ? 'bg-slate-900/90 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
                     }`}>
                       <div className="truncate min-w-0">
                         <span className="text-[9px] text-slate-400 block font-medium">③ 電話番号</span>
-                        <span className={`font-mono font-bold truncate block ${alloc.clinicValidation.hasPhone ? 'text-white' : 'text-rose-300'}`}>
-                          {alloc.matchedClinic?.phone || '⚠️ 未入力'}
+                        <span className={`font-mono font-bold truncate block ${isPhoneValid ? 'text-white' : 'text-rose-300'}`}>
+                          {phoneVal || '⚠️ 未入力'}
                         </span>
                       </div>
-                      {alloc.clinicValidation.hasPhone ? (
+                      {isPhoneValid ? (
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                       ) : (
                         <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-black text-[9px] shrink-0">欠落</span>
@@ -1546,15 +1563,15 @@ export default function CsvInvoiceImporter({
 
                     {/* Field 4: Address En */}
                     <div className={`p-1.5 px-2 rounded-lg border flex items-center justify-between gap-2 ${
-                      alloc.clinicValidation.hasAddressEn ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
+                      isAddressValid ? 'bg-slate-900/90 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
                     }`}>
                       <div className="truncate min-w-0">
                         <span className="text-[9px] text-slate-400 block font-medium">④ インボイス用英語住所</span>
-                        <span className={`font-mono font-bold truncate block ${alloc.clinicValidation.hasAddressEn ? 'text-white' : 'text-rose-300'}`}>
-                          {alloc.matchedClinic?.addressEn || '⚠️ 未入力'}
+                        <span className={`font-mono font-bold truncate block ${isAddressValid ? 'text-white' : 'text-rose-300'}`} title={addressEnVal}>
+                          {addressEnVal || '⚠️ 未入力'}
                         </span>
                       </div>
-                      {alloc.clinicValidation.hasAddressEn ? (
+                      {isAddressValid ? (
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                       ) : (
                         <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-black text-[9px] shrink-0">欠落</span>

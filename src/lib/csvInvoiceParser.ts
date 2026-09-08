@@ -20,6 +20,10 @@ export interface ClinicDataValidation {
     phone: boolean;          // 電話番号
     addressEn: boolean;      // インボイス用英語住所
   };
+  hasNameEn: boolean;
+  hasDoctorNameEn: boolean;
+  hasPhone: boolean;
+  hasAddressEn: boolean;
 }
 
 /**
@@ -30,27 +34,31 @@ export interface ClinicDataValidation {
  * 4. インボイス用英語住所 (addressEn)
  */
 export function validateClinicInvoiceCompleteness(clinic: Partial<Clinic> | null | undefined): ClinicDataValidation {
-  const missingNameEn = !clinic?.nameEn || !clinic.nameEn.trim();
-  const cleanDocEn = clinic?.doctorNameEn ? clinic.doctorNameEn.replace(/^Dr\.?\s*/i, '').trim() : '';
-  const missingDoctorNameEn = !cleanDocEn;
-  const missingPhone = !clinic?.phone || !clinic.phone.trim();
-  const missingAddressEn = !clinic?.addressEn || !clinic.addressEn.trim();
+  const hasNameEn = Boolean(clinic?.nameEn && clinic.nameEn.trim());
+  const cleanDocEn = clinic?.doctorNameEn ? clinic.doctorNameEn.replace(/^Dr\.?\s*/i, '').trim() : (clinic?.contactPersonEn ? clinic.contactPersonEn.replace(/^Dr\.?\s*/i, '').trim() : '');
+  const hasDoctorNameEn = Boolean(cleanDocEn);
+  const hasPhone = Boolean(clinic?.phone && clinic.phone.trim());
+  const hasAddressEn = Boolean(clinic?.addressEn && clinic.addressEn.trim());
 
   const missingFieldLabels: string[] = [];
-  if (missingNameEn) missingFieldLabels.push('クリニック名英語表記');
-  if (missingDoctorNameEn) missingFieldLabels.push('医師名英語表記');
-  if (missingPhone) missingFieldLabels.push('電話番号');
-  if (missingAddressEn) missingFieldLabels.push('インボイス用英語住所');
+  if (!hasNameEn) missingFieldLabels.push('クリニック名英語表記');
+  if (!hasDoctorNameEn) missingFieldLabels.push('医師名英語表記');
+  if (!hasPhone) missingFieldLabels.push('電話番号');
+  if (!hasAddressEn) missingFieldLabels.push('インボイス用英語住所');
 
   return {
     isIncomplete: missingFieldLabels.length > 0,
     missingFieldLabels,
     missingFields: {
-      nameEn: missingNameEn,
-      doctorNameEn: missingDoctorNameEn,
-      phone: missingPhone,
-      addressEn: missingAddressEn,
-    }
+      nameEn: !hasNameEn,
+      doctorNameEn: !hasDoctorNameEn,
+      phone: !hasPhone,
+      addressEn: !hasAddressEn,
+    },
+    hasNameEn,
+    hasDoctorNameEn,
+    hasPhone,
+    hasAddressEn,
   };
 }
 
