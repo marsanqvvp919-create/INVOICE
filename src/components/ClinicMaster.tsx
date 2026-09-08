@@ -19,7 +19,7 @@ interface ClinicMasterProps {
   onUpdateClinic: (id: string, clinic: Partial<Clinic>) => Promise<void>;
   onDeleteClinic: (id: string) => Promise<void>;
   onDeleteAllClinics?: () => Promise<void>;
-  onImportClinics: (clinics: Omit<Clinic, 'id' | 'createdAt'>[]) => Promise<void>;
+  onImportClinics: (clinics: Omit<Clinic, 'id' | 'createdAt'>[], replaceAll?: boolean) => Promise<void>;
 }
 
 export default function ClinicMaster({ 
@@ -37,6 +37,7 @@ export default function ClinicMaster({
   const [editingClinic, setEditingClinic] = useState<Clinic | null>(null);
   const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
+  const [replaceAllMode, setReplaceAllMode] = useState(false);
   const [csvPreview, setCsvPreview] = useState<any[]>([]);
   const [csvErrors, setCsvErrors] = useState<{ row: number; error: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -224,23 +225,95 @@ export default function ClinicMaster({
     return result;
   };
 
+  // Helper to decode CSV buffer supporting Shift-JIS (Windows-31J) & UTF-8
+  const decodeCsvBuffer = (buffer: ArrayBuffer): string => {
+    // 1. Try UTF-8 with fatal: true
+    try {
+      const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+      const text = utf8Decoder.decode(buffer);
+      // If no fatal error and does not contain replacement character \uFFFD or Shift-JIS mojibake marker
+      if (!text.includes('\uFFFD') && !text.includes('NjbN')) {
+        return text;
+      }
+    } catch {
+      // Fall through to Shift-JIS
+    }
+
+    // 2. Try Shift-JIS (standard Excel export encoding in Japan)
+    try {
+      const sjisDecoder = new TextDecoder('shift-jis');
+      const sjisText = sjisDecoder.decode(buffer);
+      return sjisText;
+    } catch {
+      // 3. Relaxed UTF-8 fallback
+      const fallbackDecoder = new TextDecoder('utf-8');
+      return fallbackDecoder.decode(buffer);
+    }
+  };
+
   // Header column aliases mapping
   const headerAliasMap: Record<string, string> = {
-    clinicid: 'clinicId', 'クリニックid': 'clinicId', 'クリニックｉｄ': 'clinicId', 'クリニックコード': 'clinicId', id: 'clinicId', 'コード': 'clinicId',
-    name: 'name', clinicname: 'name', 'クリニック名': 'name', 'クリニック名称': 'name', '名称': 'name', '施設名': 'name', '医院名': 'name', '病院名': 'name',
-    nameen: 'nameEn', clinicnameen: 'nameEn', 'クリニック名(英語)': 'nameEn', 'クリニック名（英語）': 'nameEn', '英語表記': 'nameEn', '英語名': 'nameEn', '英語名称': 'nameEn',
+    // Clinic ID (A列 / 1列目)
+    clinicid: 'clinicId', 'クリニックid': 'clinicId', 'クリニックｉｄ': 'clinicId', 'クリニックコード': 'clinicId', id: 'clinicId', 'コード': 'clinicId', 'njbnid': 'clinicId',
+    
+    // Clinic Name / 顧客名 (B列 / 2列目)
+    name: 'name', clinicname: 'name', 'クリニック名': 'name', 'クリニック名称': 'name', '名称': 'name', '施設名': 'name', '医院名': 'name', '病院名': 'name', '顧客名': 'name', '顧客': 'name', 'ڋq': 'name',
+    
+    // Clinic Name En / クリニック名英語表記 (C列 / 3列目)
+    nameen: 'nameEn', clinicnameen: 'nameEn', 'クリニック名(英語)': 'nameEn', 'クリニック名（英語）': 'nameEn', 'クリニック名英語表記': 'nameEn', '英語表記': 'nameEn', '英語名': 'nameEn', '英語名称': 'nameEn', 'njbnp\\l': 'nameEn', 'njbnp/l': 'nameEn',
+    
+    // Contact Person / 担当者 (D列 / 4列目)
+    contactperson: 'contactPerson', '担当者': 'contactPerson', '担当者名': 'contactPerson', '窓口': 'contactPerson', 's': 'contactPerson',
+    
+    // Doctor Name / 院長名 / 医師名 (E列 / 5列目)
+    doctorname: 'doctorName', '医師名': 'doctorName', '医師名(日本語)': 'doctorName', '医師名（日本語）': 'doctorName', '院長名': 'doctorName', '院長名(日本語)': 'doctorName', '院長名（日本語）': 'doctorName', '院長': 'doctorName', '医師': 'doctorName', '@': 'doctorName',
+    
+    // Doctor Name En / 院長名英語表記 / 医師名英語表記 (F列 / 6列目)
+    doctornameen: 'doctorNameEn', '医師名(英語)': 'doctorNameEn', '医師名（英語）': 'doctorNameEn', '医師英語名': 'doctorNameEn', '院長名(英語)': 'doctorNameEn', '院長名（英語）': 'doctorNameEn', '院長名英語表記': 'doctorNameEn', '@p\\l': 'doctorNameEn', '@p/l': 'doctorNameEn',
+    
+    // License url / 医師免許等 (G列 / 7列目)
+    licenseurl: 'licenseUrl', '医師免許等': 'licenseUrl', '医師免許': 'licenseUrl', '免許証等': 'licenseUrl', '免許証': 'licenseUrl', '添付書類': 'licenseUrl', '添付書類等': 'licenseUrl', 'tƋ': 'licenseUrl',
+    
+    // Payment Method / 支払方法 (H列 / 8列目)
+    paymentmethod: 'paymentMethod', '支払方法': 'paymentMethod', '支払い方法': 'paymentMethod', '決済方法': 'paymentMethod', 'x@': 'paymentMethod',
+    
+    // Closing Day / 締日 (I列 / 9列目)
+    closingday: 'closingDay', '締日': 'closingDay', '締め日': 'closingDay',
+    
+    // Payment Day / 支払日 (J列 / 10列目)
+    paymentday: 'paymentDay', '支払日': 'paymentDay', '支払期日': 'paymentDay', 'x': 'paymentDay',
+    
+    // Email 1 / メールアドレス1 (K列 / 11列目)
+    email: 'email', mail: 'email', 'メール': 'email', 'メールアドレス': 'email', 'メールアドレス1': 'email', 'メール1': 'email', '[ahx1': 'email',
+    
+    // Email 2 / メールアドレス2 (L列 / 12列目)
+    email2: 'email2', 'メールアドレス2': 'email2', 'メール2': 'email2', '[ahx2': 'email2',
+    
+    // Phone / 電話番号 (M列 / 13列目)
+    phone: 'phone', tel: 'phone', '電話番号': 'phone', '連絡先': 'phone', 'tel番号': 'phone', 'dbԍ': 'phone',
+    
+    // Address / クリニック住所 (N列 / 14列目)
+    address: 'address', '住所': 'address', '番地': 'address', '住所(日本語)': 'address', '住所（日本語）': 'address', 'クリニック住所': 'address', '所在地': 'address', 'njbnz': 'address',
+    
+    // Address En / 住所英語表記 (O列 / 15列目)
+    addressen: 'addressEn', '英語住所': 'addressEn', '住所(英語)': 'addressEn', '住所（英語）': 'addressEn', '住所英語表記': 'addressEn', 'zp\\l': 'addressEn', 'zp/l': 'addressEn',
+    
+    // Referrer / 顧客紹介者 (P列 / 16列目)
+    referrer: 'referrer', '顧客紹介者': 'referrer', '紹介者': 'referrer', 'ڋqЉ': 'referrer',
+    
+    // Referral Commission / 紹介手数料率 (Q列 / 17列目)
+    referralrate: 'referralRate', '紹介手数料率': 'referralRate', '紹介手数料': 'referralRate', '手数料率': 'referralRate', '手数料': 'referralRate', 'Љ萔': 'referralRate',
+    
+    // Referral Items (R, S列 / 18, 19列目)
+    referralitem1: 'referralItem1', '紹介品目（1）': 'referralItem1', '紹介品目(1)': 'referralItem1', '紹介品目1': 'referralItem1', 'Љ於i1j': 'referralItem1',
+    referralitem2: 'referralItem2', '紹介品目（2）': 'referralItem2', '紹介品目(2)': 'referralItem2', '紹介品目2': 'referralItem2', 'Љ於i2j': 'referralItem2',
+    
+    // Legacy / other common headers
     corporationname: 'corporationName', '法人名': 'corporationName', '医療法人名': 'corporationName',
-    contactperson: 'contactPerson', '担当者': 'contactPerson', '担当者名': 'contactPerson', '窓口': 'contactPerson',
-    doctorname: 'doctorName', '医師名': 'doctorName', '医師名(日本語)': 'doctorName', '医師名（日本語）': 'doctorName', '院長名': 'doctorName', '医師': 'doctorName',
-    doctornameen: 'doctorNameEn', '医師名(英語)': 'doctorNameEn', '医師名（英語）': 'doctorNameEn', '医師英語名': 'doctorNameEn',
     zip: 'zip', postalcode: 'zip', '郵便番号': 'zip', '〒': 'zip',
     prefecture: 'prefecture', '都道府県': 'prefecture',
     city: 'city', '市区町村': 'city',
-    address: 'address', '住所': 'address', '番地': 'address', '住所(日本語)': 'address', '住所（日本語）': 'address',
     building: 'building', '建物名': 'building', 'ビル名': 'building',
-    addressen: 'addressEn', '英語住所': 'addressEn', '住所(英語)': 'addressEn', '住所（英語）': 'addressEn',
-    phone: 'phone', tel: 'phone', '電話番号': 'phone', '連絡先': 'phone',
-    email: 'email', mail: 'email', 'メール': 'email', 'メールアドレス': 'email',
     notes: 'notes', memo: 'notes', '備考': 'notes', 'メモ': 'notes',
     active: 'active', status: 'active', 'ステータス': 'active', '有効': 'active'
   };
@@ -252,42 +325,95 @@ export default function ClinicMaster({
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      const text = event.target?.result as string;
-      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      const buffer = event.target?.result as ArrayBuffer;
+      const text = decodeCsvBuffer(buffer);
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
       
-      if (lines.length <= 1) {
-        alert('CSVにヘッダー行以外の有効なデータが含まれていません。');
+      if (lines.length === 0) {
+        alert('CSVファイルが空です。');
         return;
       }
 
       const rawHeaders = parseCsvLine(lines[0]);
-      const mappedHeaders = rawHeaders.map(h => {
+      
+      // Check if line 0 is a header row
+      const isHeaderRow = rawHeaders.some(h => {
         const key = h.toLowerCase().replace(/[\s\-_]/g, '');
-        return headerAliasMap[key] || headerAliasMap[h] || h;
+        return headerAliasMap[key] !== undefined || key.includes('id') || key.includes('名') || key.includes('clinic');
       });
+
+      const mappedHeaders = isHeaderRow 
+        ? rawHeaders.map(h => {
+            const key = h.toLowerCase().replace(/[\s\-_]/g, '');
+            return headerAliasMap[key] || headerAliasMap[h] || h;
+          })
+        : [];
 
       const parsedData: any[] = [];
       const errorsList: { row: number; error: string }[] = [];
+      const startLine = isHeaderRow ? 1 : 0;
 
-      for (let i = 1; i < lines.length; i++) {
+      for (let i = startLine; i < lines.length; i++) {
         const rowValues = parseCsvLine(lines[i]);
+        if (rowValues.length === 0 || (rowValues.length === 1 && !rowValues[0])) continue;
 
-        // Map columns
+        // Map columns if header row was present
         const rowObj: Record<string, string> = {};
-        mappedHeaders.forEach((header, idx) => {
-          rowObj[header] = (rowValues[idx] || '').trim();
-        });
+        if (isHeaderRow) {
+          mappedHeaders.forEach((header, idx) => {
+            rowObj[header] = (rowValues[idx] || '').trim();
+          });
+        }
+
+        // Positional fallback for the 19-column clinic format:
+        // Col 0: clinicId (A列: クリニックID)
+        // Col 1: name (B列: 顧客名)
+        // Col 2: nameEn (C列: クリニック名英語表記)
+        // Col 3: contactPerson (D列: 担当者)
+        // Col 4: doctorName (E列: 院長名 / 医師名)
+        // Col 5: doctorNameEn (F列: 院長名英語表記)
+        // Col 6: licenseUrl (G列: 医師免許等)
+        // Col 7: paymentMethod (H列: 支払方法)
+        // Col 8: closingDay (I列: 締日)
+        // Col 9: paymentDay (J列: 支払日)
+        // Col 10: email1 (K列: メールアドレス1)
+        // Col 11: email2 (L列: メールアドレス2)
+        // Col 12: phone (M列: 電話番号)
+        // Col 13: address (N列: クリニック住所)
+        // Col 14: addressEn (O列: 住所英語表記)
+        // Col 15: referrer (P列: 顧客紹介者)
+        // Col 16: referralRate (Q列: 紹介手数料率)
+        // Col 17: referralItem1 (R列: 紹介品目1)
+        // Col 18: referralItem2 (S列: 紹介品目2)
+        const is19ColFormat = rowValues.length >= 13;
+
+        let clinicId = (rowObj['clinicId'] || (is19ColFormat ? rowValues[0] : '') || '').trim();
+        let name = (rowObj['name'] || (is19ColFormat ? rowValues[1] : '') || '').trim();
+        let nameEn = (rowObj['nameEn'] || (is19ColFormat ? rowValues[2] : '') || '').trim();
+        const contactPerson = (rowObj['contactPerson'] || (is19ColFormat && rowValues[3] ? rowValues[3] : '') || '').trim();
+        const doctorName = (rowObj['doctorName'] || (is19ColFormat && rowValues[4] ? rowValues[4] : '') || '').trim();
+        let doctorNameEn = (rowObj['doctorNameEn'] || (is19ColFormat && rowValues[5] ? rowValues[5] : '') || '').trim().replace(/^Dr\.?\s*/i, '');
+        const licenseUrl = (rowObj['licenseUrl'] || (is19ColFormat && rowValues[6] ? rowValues[6] : '') || '').trim();
+        const paymentMethod = (rowObj['paymentMethod'] || (is19ColFormat && rowValues[7] ? rowValues[7] : '') || '').trim();
+        const closingDay = (rowObj['closingDay'] || (is19ColFormat && rowValues[8] ? rowValues[8] : '') || '').trim();
+        const paymentDay = (rowObj['paymentDay'] || (is19ColFormat && rowValues[9] ? rowValues[9] : '') || '').trim();
+        const email1 = (rowObj['email'] || (is19ColFormat && rowValues[10] ? rowValues[10] : '') || '').trim();
+        const email2 = (rowObj['email2'] || (is19ColFormat && rowValues[11] ? rowValues[11] : '') || '').trim();
+        const phone = (rowObj['phone'] || (is19ColFormat && rowValues[12] ? rowValues[12] : '') || '').trim();
+        const rawAddress = (rowObj['address'] || (is19ColFormat && rowValues[13] ? rowValues[13] : '') || '').trim();
+        let addressEn = (rowObj['addressEn'] || (is19ColFormat && rowValues[14] ? rowValues[14] : '') || '').trim();
+        const referrer = (rowObj['referrer'] || (is19ColFormat && rowValues[15] ? rowValues[15] : '') || '').trim();
+        const referralRate = (rowObj['referralRate'] || (is19ColFormat && rowValues[16] ? rowValues[16] : '') || '').trim();
+        const referralItem1 = (rowObj['referralItem1'] || (is19ColFormat && rowValues[17] ? rowValues[17] : '') || '').trim();
+        const referralItem2 = (rowObj['referralItem2'] || (is19ColFormat && rowValues[18] ? rowValues[18] : '') || '').trim();
 
         // Auto-fill Clinic ID if blank
-        let clinicId = rowObj['clinicId'] || '';
         if (!clinicId) {
           const autoNum = clinics.length + parsedData.length + 1;
           clinicId = `CLN-${String(autoNum).padStart(3, '0')}`;
         }
 
         // Auto-fill Clinic Names if blank
-        let name = rowObj['name'] || '';
-        let nameEn = rowObj['nameEn'] || '';
         if (!name && nameEn) {
           name = nameEn;
         } else if (!name && !nameEn) {
@@ -297,35 +423,77 @@ export default function ClinicMaster({
           nameEn = name;
         }
 
-        // Auto-fill English Address if blank
-        let addressEn = rowObj['addressEn'] || '';
+        // Auto-extract zip, prefecture, and clean address
+        const zipMatch = rawAddress.match(/〒?\s*([0-9]{3}-?[0-9]{4})/);
+        const zip = rowObj['zip'] || (zipMatch ? zipMatch[1] : '');
+        const cleanAddress = rawAddress.replace(/^〒?\s*[0-9]{3}-?[0-9]{4}\s*/, '').trim();
+        const prefMatch = cleanAddress.match(/^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)/);
+        const prefecture = rowObj['prefecture'] || (prefMatch ? prefMatch[1] : '');
+
         if (!addressEn) {
-          const parts = [rowObj['prefecture'], rowObj['city'], rowObj['address'], rowObj['building']].filter(Boolean);
-          addressEn = parts.length > 0 ? parts.join(', ') : (rowObj['address'] || '');
+          const parts = [prefecture, rowObj['city'], cleanAddress, rowObj['building']].filter(Boolean);
+          addressEn = parts.length > 0 ? parts.join(', ') : (cleanAddress || rawAddress);
         }
 
         // Parse Active boolean
         const activeVal = (rowObj['active'] || '').toLowerCase();
         const active = activeVal === 'false' || activeVal === '無効' || activeVal === '0' ? false : true;
 
+        // Collect extra info into notes if available
+        const extraNotesArr: string[] = [];
+        if (rowObj['notes']) extraNotesArr.push(rowObj['notes']);
+        if (paymentMethod) extraNotesArr.push(`支払方法: ${paymentMethod}`);
+        if (closingDay || paymentDay) extraNotesArr.push(`締め/支払: ${closingDay || '-'} / ${paymentDay || '-'}`);
+        if (referrer) extraNotesArr.push(`紹介者: ${referrer}`);
+        if (referralRate) extraNotesArr.push(`紹介手数料率: ${referralRate}%`);
+        if (referralItem1 || referralItem2) extraNotesArr.push(`紹介品目: ${[referralItem1, referralItem2].filter(Boolean).join(', ')}`);
+        if (email2 && email2 !== email1) extraNotesArr.push(`サブメール: ${email2}`);
+        if (licenseUrl) extraNotesArr.push(`免許等URL: ${licenseUrl}`);
+        const notes = extraNotesArr.join(' | ');
+
+        // Check matching with existing clinic
+        const idRaw = clinicId.toUpperCase();
+        const idStripped = idRaw.replace(/^0+/, '');
+        const nameLower = name.toLowerCase();
+
+        const existingMatch = clinics.find(c => {
+          const cId = (c.clinicId || '').toUpperCase();
+          const cIdStripped = cId.replace(/^0+/, '');
+          const cName = (c.name || '').toLowerCase();
+          return (idRaw && cId === idRaw) ||
+                 (idStripped && cIdStripped === idStripped) ||
+                 (nameLower && cName === nameLower);
+        });
+
         parsedData.push({
           rowNum: i + 1,
+          isUpdate: !!existingMatch,
+          matchedClinicId: existingMatch?.clinicId,
           clinicId,
           name,
           nameEn,
           corporationName: rowObj['corporationName'] || '',
-          contactPerson: rowObj['contactPerson'] || '',
-          doctorName: rowObj['doctorName'] || '',
-          doctorNameEn: (rowObj['doctorNameEn'] || '').replace(/^Dr\.?\s*/i, '').trim(),
-          zip: rowObj['zip'] || '',
-          prefecture: rowObj['prefecture'] || '',
+          contactPerson,
+          doctorName,
+          doctorNameEn,
+          zip,
+          prefecture,
           city: rowObj['city'] || '',
-          address: rowObj['address'] || '',
+          address: cleanAddress || rawAddress,
           building: rowObj['building'] || '',
           addressEn,
-          phone: rowObj['phone'] || '',
-          email: rowObj['email'] || '',
-          notes: rowObj['notes'] || '',
+          phone,
+          email: email1 || email2,
+          email2,
+          licenseUrl,
+          paymentMethod,
+          closingDay,
+          paymentDay,
+          referrer,
+          referralRate,
+          referralItem1,
+          referralItem2,
+          notes,
           active
         });
       }
@@ -333,7 +501,7 @@ export default function ClinicMaster({
       setCsvPreview(parsedData);
       setCsvErrors(errorsList);
     };
-    reader.readAsText(file, 'UTF-8');
+    reader.readAsArrayBuffer(file);
   };
 
   const handleConfirmImport = async () => {
@@ -344,12 +512,18 @@ export default function ClinicMaster({
 
     try {
       // Filter out meta values and save
-      const cleanData = csvPreview.map(({ rowNum, ...rest }) => rest);
-      await onImportClinics(cleanData);
+      const cleanData = csvPreview.map(({ rowNum, isUpdate, matchedClinicId, ...rest }) => rest);
+      await onImportClinics(cleanData, replaceAllMode);
       setIsCsvImportOpen(false);
       setCsvPreview([]);
       setCsvErrors([]);
-      alert('CSVインポートが完了しました。');
+      const updateCount = csvPreview.filter(p => p.isUpdate).length;
+      const newCount = csvPreview.length - updateCount;
+      if (replaceAllMode) {
+        alert(`クリニックマスタ全置換インポートが完了しました（全 ${cleanData.length} 件）`);
+      } else {
+        alert(`クリニックマスタのCSV反映が完了しました（全 ${cleanData.length} 件：既存更新 ${updateCount} 件、新規追加 ${newCount} 件）`);
+      }
     } catch (err) {
       console.error(err);
       alert('インポート中にエラーが発生しました。');
@@ -830,23 +1004,50 @@ export default function ClinicMaster({
             </div>
             
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
-              <div className="bg-slate-50 p-4 rounded-lg text-xs text-slate-600 border border-slate-200 space-y-2">
-                <p className="font-bold text-slate-800">【CSVフォーマット規定】</p>
-                <p>1行目はヘッダー行として、以下の項目名（日本語または英語）を設定できます：</p>
-                <p className="font-mono bg-white p-2 rounded border border-slate-100 overflow-x-auto text-[10px]">
-                  clinicId, name, nameEn, corporationName, contactPerson, doctorName, doctorNameEn, zip, prefecture, city, address, building, addressEn, phone, email, notes, active
-                </p>
-                <p className="text-emerald-700 font-semibold">※空欄の項目（クリニックID、名前、住所等）があるデータも自動補完（ID自動発行など）してそのまま一括インポートできます。</p>
+              <div className="bg-slate-50 p-4 rounded-lg text-xs text-slate-600 border border-slate-200 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <p className="font-bold text-slate-800">【対応CSVフォーマット】</p>
+                  <span className="text-[10px] bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-medium border border-blue-200">
+                    Shift-JIS / UTF-8 自動判定対応
+                  </span>
+                </div>
+                <p>19列形式（クリニック一覧エクスポート）および従来形式の両方に対応しています：</p>
+                <div className="font-mono bg-white p-2.5 rounded border border-slate-200 overflow-x-auto text-[10px] text-slate-700 leading-relaxed">
+                  A:クリニックID, B:顧客名, C:クリニック名英語表記, D:担当者, E:院長名, F:院長名英語表記, G:医師免許等, H:支払方法, I:締日, J:支払日, K:メールアドレス1, L:メールアドレス2, M:電話番号, N:クリニック住所, O:住所英語表記, P:顧客紹介者, Q:紹介手数料率, R:紹介品目1, S:紹介品目2
+                </div>
+                <div className="flex flex-col gap-1 text-[11px] text-slate-600">
+                  <p className="text-emerald-700 font-medium">
+                    ✓ 既存反映ルール：クリニックID（000005743 / 5743など）またはクリニック名が一致するデータは、現在のクリニックマスタの情報を上書き更新します。一致しない場合は新規登録されます。
+                  </p>
+                  <p className="text-slate-500">
+                    ✓ 住所・郵便番号・英語住所・医師名（Dr.接頭辞除去）なども自動補完・整形されます。
+                  </p>
+                </div>
+              </div>
+
+              {/* Replace all mode checkbox */}
+              <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3 flex items-start gap-2.5">
+                <input
+                  type="checkbox"
+                  id="replaceAllClinics"
+                  checked={replaceAllMode}
+                  onChange={(e) => setReplaceAllMode(e.target.checked)}
+                  className="mt-0.5 rounded text-amber-600 focus:ring-amber-500 h-4 w-4 border-amber-300"
+                />
+                <label htmlFor="replaceAllClinics" className="text-xs text-amber-900 cursor-pointer select-none">
+                  <span className="font-bold">全置換モードで取り込む（危険）:</span> 既存のクリニックデータをすべて削除し、このCSVのデータのみでクリニックマスタを初期化・再構築します。
+                  <span className="block text-[10px] text-amber-700 mt-0.5">※通常はチェックを外したままにしてください（既存データを安全に最新情報へ更新します）。</span>
+                </label>
               </div>
 
               {/* Upload Dropzone */}
               <div 
                 onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-slate-200 rounded-xl p-8 text-center hover:bg-slate-50 cursor-pointer transition-colors space-y-2"
+                className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:bg-slate-50 cursor-pointer transition-colors space-y-2"
               >
-                <Upload className="w-8 h-8 text-slate-400 mx-auto" />
+                <Upload className="w-7 h-7 text-slate-400 mx-auto" />
                 <p className="text-xs font-bold text-slate-700">ファイルを選択、またはここにドラッグ＆ドロップしてください</p>
-                <p className="text-[10px] text-slate-400">CSV形式ファイルのみサポート（UTF-8エンコード推奨）</p>
+                <p className="text-[10px] text-slate-400">CSV形式ファイル（Excel出力のShift-JISまたはUTF-8）</p>
                 <input
                   type="file"
                   ref={fileInputRef}
@@ -875,9 +1076,15 @@ export default function ClinicMaster({
               {csvPreview.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex justify-between items-center">
-                    <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                    <h4 className="text-xs font-bold text-slate-800 flex items-center gap-2">
                       <CheckCircle className="w-4 h-4 text-emerald-600" />
-                      <span>インポートプレビュー ({csvPreview.length}件)</span>
+                      <span>インポートプレビュー (全 {csvPreview.length} 件)</span>
+                      <span className="text-[10px] bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-bold border border-blue-200">
+                        既存更新: {csvPreview.filter(r => r.isUpdate).length} 件
+                      </span>
+                      <span className="text-[10px] bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded font-bold border border-emerald-200">
+                        新規登録: {csvPreview.filter(r => !r.isUpdate).length} 件
+                      </span>
                     </h4>
                     {csvErrors.length === 0 && (
                       <span className="text-[10px] bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded font-bold">
@@ -886,27 +1093,43 @@ export default function ClinicMaster({
                     )}
                   </div>
                   
-                  <div className="border border-slate-200 rounded-lg overflow-hidden max-h-60 overflow-y-auto">
+                  <div className="border border-slate-200 rounded-lg overflow-hidden max-h-64 overflow-y-auto">
                     <table className="w-full text-left border-collapse text-[10px]">
                       <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 font-bold text-slate-500 uppercase tracking-wider">
+                        <tr className="bg-slate-50 border-b border-slate-200 font-bold text-slate-600 tracking-wider">
+                          <th className="px-3 py-2 text-center">種別</th>
                           <th className="px-3 py-2">行</th>
                           <th className="px-3 py-2">クリニックID</th>
-                          <th className="px-3 py-2">クリニック名</th>
-                          <th className="px-3 py-2">英語名</th>
-                          <th className="px-3 py-2">英語住所</th>
+                          <th className="px-3 py-2">顧客名 / クリニック名</th>
+                          <th className="px-3 py-2">英語表記</th>
+                          <th className="px-3 py-2">院長名 (日/英)</th>
                           <th className="px-3 py-2">電話番号</th>
+                          <th className="px-3 py-2">英語住所</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 font-medium">
                         {csvPreview.map((row, idx) => (
                           <tr key={idx} className="hover:bg-slate-50/50">
+                            <td className="px-3 py-2 text-center">
+                              {row.isUpdate ? (
+                                <span className="bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded text-[9px] font-bold">
+                                  既存更新
+                                </span>
+                              ) : (
+                                <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded text-[9px] font-bold">
+                                  新規追加
+                                </span>
+                              )}
+                            </td>
                             <td className="px-3 py-2 font-mono text-slate-400">{row.rowNum}</td>
                             <td className="px-3 py-2 font-bold font-mono text-slate-800">{row.clinicId}</td>
-                            <td className="px-3 py-2 text-slate-800">{row.name}</td>
+                            <td className="px-3 py-2 text-slate-800 font-medium">{row.name}</td>
                             <td className="px-3 py-2 text-slate-600">{row.nameEn}</td>
-                            <td className="px-3 py-2 text-slate-500 truncate max-w-xs" title={row.addressEn}>{row.addressEn}</td>
-                            <td className="px-3 py-2 font-mono text-slate-500">{row.phone}</td>
+                            <td className="px-3 py-2 text-slate-600">
+                              {row.doctorName || '-'}{row.doctorNameEn ? ` (${row.doctorNameEn})` : ''}
+                            </td>
+                            <td className="px-3 py-2 font-mono text-slate-500">{row.phone || '-'}</td>
+                            <td className="px-3 py-2 text-slate-500 truncate max-w-xs" title={row.addressEn}>{row.addressEn || '-'}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -918,26 +1141,35 @@ export default function ClinicMaster({
             </div>
 
             {/* Import Footer actions */}
-            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-end gap-2.5 bg-slate-50/50">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsCsvImportOpen(false);
-                  setCsvPreview([]);
-                  setCsvErrors([]);
-                }}
-                className="bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded text-xs font-semibold hover:bg-slate-50 cursor-pointer"
-              >
-                キャンセル
-              </button>
-              <button
-                type="button"
-                disabled={csvPreview.length === 0 || csvErrors.length > 0}
-                onClick={handleConfirmImport}
-                className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 text-white disabled:text-slate-400 px-5 py-2 rounded text-xs font-bold cursor-pointer transition-colors"
-              >
-                一括インポートを確定
-              </button>
+            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="text-[11px] text-slate-500">
+                {csvPreview.length > 0 && (
+                  <span>
+                    反映予定: 既存クリニック {csvPreview.filter(r => r.isUpdate).length} 件の更新、新規クリニック {csvPreview.filter(r => !r.isUpdate).length} 件の追加
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCsvImportOpen(false);
+                    setCsvPreview([]);
+                    setCsvErrors([]);
+                  }}
+                  className="bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded text-xs font-semibold hover:bg-slate-50 cursor-pointer"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="button"
+                  disabled={csvPreview.length === 0 || csvErrors.length > 0}
+                  onClick={handleConfirmImport}
+                  className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 text-white disabled:text-slate-400 px-5 py-2 rounded text-xs font-bold cursor-pointer transition-colors"
+                >
+                  {replaceAllMode ? '全置換インポートを実行' : 'CSVの変更を反映する'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

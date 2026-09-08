@@ -645,17 +645,107 @@ export default function App() {
     await logAuditAction('CLINIC_DELETE_ALL', 'Clinics', 'Exist', 'Deleted all clinics');
   };
 
-  const handleImportClinics = async (newClinics: Omit<Clinic, 'id' | 'createdAt'>[]) => {
-    const batch = writeBatch(db);
-    newClinics.forEach(c => {
-      const ref = doc(collection(db, 'clinics'));
-      batch.set(ref, {
-        ...c,
-        createdAt: new Date().toISOString()
-      });
+  const handleImportClinics = async (newClinics: Omit<Clinic, 'id' | 'createdAt'>[], replaceAll = false) => {
+    // 1. Fetch current snapshot of clinics from Firestore
+    const snap = await getDocs(collection(db, 'clinics'));
+    const existingClinics = snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Clinic, 'id'>) }));
+
+    const chunkSize = 400;
+
+    if (replaceAll) {
+      // Chunked deletion of all existing clinics
+      for (let i = 0; i < snap.docs.length; i += chunkSize) {
+        const chunk = snap.docs.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(doc(db, 'clinics', d.id)));
+        await batch.commit();
+      }
+
+      // Chunked insertion of new clinics
+      for (let i = 0; i < newClinics.length; i += chunkSize) {
+        const chunk = newClinics.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        chunk.forEach(c => {
+          const ref = doc(collection(db, 'clinics'));
+          batch.set(ref, {
+            ...c,
+            createdAt: new Date().toISOString()
+          });
+        });
+        await batch.commit();
+      }
+
+      await logAuditAction(
+        'CLINIC_IMPORT_CSV',
+        'Clinics CSV',
+        'None',
+        `クリニックマスタ全置換インポート実行: 全${newClinics.length}件を登録しました`
+      );
+      return;
+    }
+
+    // Default: Safe Upsert (Update existing clinics by matching ID or name, otherwise add new)
+    const existingById = new Map<string, Clinic>();
+    const existingByName = new Map<string, Clinic>();
+
+    existingClinics.forEach(c => {
+      const idRaw = (c.clinicId || '').trim().toUpperCase();
+      const idStripped = idRaw.replace(/^0+/, '');
+      if (idRaw) existingById.set(idRaw, c);
+      if (idStripped) existingById.set(idStripped, c);
+
+      const nameKey = (c.name || '').trim().toLowerCase();
+      if (nameKey) existingByName.set(nameKey, c);
     });
-    await batch.commit();
-    await logAuditAction('CLINIC_IMPORT_CSV', 'Clinics CSV', 'None', `Imported ${newClinics.length} clinics`);
+
+    let updatedCount = 0;
+    let addedCount = 0;
+    const writeOperations: ((batch: ReturnType<typeof writeBatch>) => void)[] = [];
+
+    newClinics.forEach(c => {
+      const idRaw = (c.clinicId || '').trim().toUpperCase();
+      const idStripped = idRaw.replace(/^0+/, '');
+      const nameKey = (c.name || '').trim().toLowerCase();
+
+      const matchedExisting = (idRaw && existingById.get(idRaw)) ||
+                              (idStripped && existingById.get(idStripped)) ||
+                              (nameKey && existingByName.get(nameKey));
+
+      if (matchedExisting) {
+        const docRef = doc(db, 'clinics', matchedExisting.id);
+        writeOperations.push(batch => {
+          batch.update(docRef, {
+            ...c,
+            updatedAt: new Date().toISOString()
+          });
+        });
+        updatedCount++;
+      } else {
+        const docRef = doc(collection(db, 'clinics'));
+        writeOperations.push(batch => {
+          batch.set(docRef, {
+            ...c,
+            createdAt: new Date().toISOString()
+          });
+        });
+        addedCount++;
+      }
+    });
+
+    // Commit in chunks of 400 (Firestore limit is 500)
+    for (let i = 0; i < writeOperations.length; i += chunkSize) {
+      const chunk = writeOperations.slice(i, i + chunkSize);
+      const batch = writeBatch(db);
+      chunk.forEach(op => op(batch));
+      await batch.commit();
+    }
+
+    await logAuditAction(
+      'CLINIC_IMPORT_CSV',
+      'Clinics CSV',
+      'None',
+      `クリニックマスタCSV反映完了: 計${newClinics.length}件 (既存情報更新: ${updatedCount}件, 新規登録: ${addedCount}件)`
+    );
   };
 
   // Product Master CRUD functions

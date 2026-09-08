@@ -25,6 +25,15 @@ export interface Clinic {
   addressEn: string;
   phone: string;
   email: string;
+  email2?: string;
+  licenseUrl?: string;
+  paymentMethod?: string;
+  closingDay?: string;
+  paymentDay?: string;
+  referrer?: string;
+  referralRate?: string;
+  referralItem1?: string;
+  referralItem2?: string;
   notes: string;
   active: boolean;
   createdAt: string;
