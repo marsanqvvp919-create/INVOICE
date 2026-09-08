@@ -18,6 +18,7 @@ interface ClinicMasterProps {
   onAddClinic: (clinic: Omit<Clinic, 'id' | 'createdAt'>) => Promise<void>;
   onUpdateClinic: (id: string, clinic: Partial<Clinic>) => Promise<void>;
   onDeleteClinic: (id: string) => Promise<void>;
+  onDeleteAllClinics?: () => Promise<void>;
   onImportClinics: (clinics: Omit<Clinic, 'id' | 'createdAt'>[]) => Promise<void>;
 }
 
@@ -26,6 +27,7 @@ export default function ClinicMaster({
   onAddClinic, 
   onUpdateClinic, 
   onDeleteClinic,
+  onDeleteAllClinics,
   onImportClinics
 }: ClinicMasterProps) {
   
@@ -34,6 +36,7 @@ export default function ClinicMaster({
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingClinic, setEditingClinic] = useState<Clinic | null>(null);
   const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [csvPreview, setCsvPreview] = useState<any[]>([]);
   const [csvErrors, setCsvErrors] = useState<{ row: number; error: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -395,6 +398,27 @@ export default function ClinicMaster({
     document.body.removeChild(link);
   };
 
+  const handleConfirmDeleteAll = async () => {
+    const confirmed = window.confirm(
+      `【警告】クリニックマスタの全データ（${clinics.length}件）を完全に削除します。\n` +
+      `この操作は取り消せません。再度CSVから登録し直す場合は「OK」を押してください。`
+    );
+    if (!confirmed) return;
+
+    setIsDeletingAll(true);
+    try {
+      if (onDeleteAllClinics) {
+        await onDeleteAllClinics();
+        alert('クリニックマスタを全件削除しました。新しいCSVを取り込んでください。');
+      }
+    } catch (err: any) {
+      console.error('Failed to delete all clinics:', err);
+      alert('全件削除中にエラーが発生しました: ' + (err?.message || '不明なエラー'));
+    } finally {
+      setIsDeletingAll(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header and top buttons */}
@@ -405,6 +429,19 @@ export default function ClinicMaster({
         </div>
         
         <div className="flex flex-wrap items-center gap-2">
+          {clinics.length > 0 && onDeleteAllClinics && (
+            <button
+              type="button"
+              onClick={handleConfirmDeleteAll}
+              disabled={isDeletingAll}
+              className="bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-sm disabled:opacity-50 transition-colors"
+              title="クリニックマスタの全データを削除します"
+            >
+              <Trash2 className="w-4 h-4 text-rose-500" />
+              <span>{isDeletingAll ? '削除中...' : 'マスタ全件削除'}</span>
+            </button>
+          )}
+
           <button
             onClick={handleExportCsv}
             className="bg-white border border-slate-200 text-slate-700 px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 hover:bg-slate-50 cursor-pointer shadow-sm"

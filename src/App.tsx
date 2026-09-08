@@ -629,6 +629,22 @@ export default function App() {
     await logAuditAction('CLINIC_DELETE', id, 'Exist', 'Deleted clinic');
   };
 
+  const handleDeleteAllClinics = async () => {
+    let snap = await getDocs(collection(db, 'clinics'));
+    while (snap.size > 0) {
+      const docs = snap.docs;
+      const chunkSize = 400;
+      for (let i = 0; i < docs.length; i += chunkSize) {
+        const chunk = docs.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(doc(db, 'clinics', d.id)));
+        await batch.commit();
+      }
+      snap = await getDocs(collection(db, 'clinics'));
+    }
+    await logAuditAction('CLINIC_DELETE_ALL', 'Clinics', 'Exist', 'Deleted all clinics');
+  };
+
   const handleImportClinics = async (newClinics: Omit<Clinic, 'id' | 'createdAt'>[]) => {
     const batch = writeBatch(db);
     newClinics.forEach(c => {
@@ -1391,6 +1407,7 @@ export default function App() {
               onAddClinic={handleAddClinic}
               onUpdateClinic={handleUpdateClinic}
               onDeleteClinic={handleDeleteClinic}
+              onDeleteAllClinics={handleDeleteAllClinics}
               onImportClinics={handleImportClinics}
             />
           )}
