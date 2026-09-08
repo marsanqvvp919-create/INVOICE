@@ -11,6 +11,49 @@ export interface ParsedCsvRow {
   extraColumns: string[];
 }
 
+export interface ClinicDataValidation {
+  isIncomplete: boolean;
+  missingFieldLabels: string[]; // e.g. ['クリニック名英語表記', '医師名英語表記', '電話番号', 'インボイス用英語住所']
+  missingFields: {
+    nameEn: boolean;         // クリニック名英語表記
+    doctorNameEn: boolean;   // 医師名英語表記
+    phone: boolean;          // 電話番号
+    addressEn: boolean;      // インボイス用英語住所
+  };
+}
+
+/**
+ * Validates whether the clinic has all 4 required fields for commercial invoice creation:
+ * 1. クリニック名英語表記 (nameEn)
+ * 2. 医師名英語表記 (doctorNameEn)
+ * 3. 電話番号 (phone)
+ * 4. インボイス用英語住所 (addressEn)
+ */
+export function validateClinicInvoiceCompleteness(clinic: Partial<Clinic> | null | undefined): ClinicDataValidation {
+  const missingNameEn = !clinic?.nameEn || !clinic.nameEn.trim();
+  const cleanDocEn = clinic?.doctorNameEn ? clinic.doctorNameEn.replace(/^Dr\.?\s*/i, '').trim() : '';
+  const missingDoctorNameEn = !cleanDocEn;
+  const missingPhone = !clinic?.phone || !clinic.phone.trim();
+  const missingAddressEn = !clinic?.addressEn || !clinic.addressEn.trim();
+
+  const missingFieldLabels: string[] = [];
+  if (missingNameEn) missingFieldLabels.push('クリニック名英語表記');
+  if (missingDoctorNameEn) missingFieldLabels.push('医師名英語表記');
+  if (missingPhone) missingFieldLabels.push('電話番号');
+  if (missingAddressEn) missingFieldLabels.push('インボイス用英語住所');
+
+  return {
+    isIncomplete: missingFieldLabels.length > 0,
+    missingFieldLabels,
+    missingFields: {
+      nameEn: missingNameEn,
+      doctorNameEn: missingDoctorNameEn,
+      phone: missingPhone,
+      addressEn: missingAddressEn,
+    }
+  };
+}
+
 export interface ParsedClinicAllocation {
   id: string; // temporary key
   clinicNameCsv: string;
@@ -26,6 +69,9 @@ export interface ParsedClinicAllocation {
   // Invoice No: strictly system-generated as user instructed
   systemGeneratedInvoiceNo: string;
   csvIgnoredInvoiceNo: string;
+
+  // Validation alert details for required invoice fields
+  clinicValidation: ClinicDataValidation;
   
   items: {
     id: string;
@@ -60,6 +106,7 @@ export interface CsvParseResult {
   totalQuantity: number;
   totalAmount: number;
   unmatchedClinicsCount: number;
+  incompleteClinicsCount: number;
   unmatchedProductsCount: number;
   detectedColumns: {
     clinicCol: number;
@@ -402,6 +449,7 @@ export function parseShippingCsv(
       totalQuantity: 0,
       totalAmount: 0,
       unmatchedClinicsCount: 0,
+      incompleteClinicsCount: 0,
       unmatchedProductsCount: 0,
       detectedColumns: { clinicCol: 0, recipientCol: 1, invoiceCol: 2, productCol: 3, qtyCol: 4 },
       warnings: ['CSVデータが空です。']
@@ -477,15 +525,16 @@ export function parseShippingCsv(
       clinicCounter++;
       const matched = findMatchingClinic(colAVal, dbClinics);
       const clinicObj = matched.clinic;
+      const clinicValidation = validateClinicInvoiceCompleteness(clinicObj);
 
       // Rule: System generates the invoice number (CSV Column C is ignored)
       const paddedNum = String(clinicCounter).padStart(3, '0');
       const generatedInvoiceNo = `${basePrefix}${dateStr}-${paddedNum}`;
 
       // Rule: Recipient is pulled strictly from DB (CSV Column B is ignored, strictly WITHOUT "Dr." prefix)
-      const rawDocEn = clinicObj?.doctorNameEn || clinicObj?.doctorName || 'Medical Director';
+      const rawDocEn = clinicObj?.doctorNameEn || '';
       const docEn = rawDocEn.replace(/^Dr\.?\s*/i, '').trim();
-      const docJa = clinicObj?.doctorName || clinicObj?.contactPerson || '院長';
+      const docJa = clinicObj?.doctorName || clinicObj?.contactPerson || '';
 
       currentAlloc = {
         id: `alloc_${clinicCounter}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
@@ -498,6 +547,7 @@ export function parseShippingCsv(
         csvIgnoredRecipient: colBVal,
         systemGeneratedInvoiceNo: generatedInvoiceNo,
         csvIgnoredInvoiceNo: colCVal,
+        clinicValidation,
         items: [],
         totalQty: 0,
         totalAmount: 0,
@@ -510,6 +560,10 @@ export function parseShippingCsv(
         currentAlloc.warnings.push(`クリニック「${colAVal}」がデータベースに未登録です。`);
       } else if (matched.source === 'MASTER_PRESET') {
         currentAlloc.warnings.push(`マスタープリセットから自動補完しました（未確定）。`);
+      }
+
+      if (clinicValidation.isIncomplete) {
+        currentAlloc.warnings.push(`【データ不十分】必須項目未入力: ${clinicValidation.missingFieldLabels.join('、')}`);
       }
 
       allocations.push(currentAlloc);
@@ -566,6 +620,7 @@ export function parseShippingCsv(
   let totalQuantity = 0;
   let totalAmount = 0;
   let unmatchedClinicsCount = 0;
+  let incompleteClinicsCount = 0;
   let unmatchedProductsCount = 0;
 
   allocations.forEach(alloc => {
@@ -574,6 +629,7 @@ export function parseShippingCsv(
     totalAmount += alloc.totalAmount;
 
     if (!alloc.isDbMatched) unmatchedClinicsCount++;
+    if (alloc.clinicValidation.isIncomplete) incompleteClinicsCount++;
     alloc.items.forEach(it => {
       if (!it.isProductDbMatched) unmatchedProductsCount++;
     });
@@ -587,6 +643,7 @@ export function parseShippingCsv(
     totalQuantity,
     totalAmount,
     unmatchedClinicsCount,
+    incompleteClinicsCount,
     unmatchedProductsCount,
     detectedColumns: { clinicCol, recipientCol, invoiceCol, productCol, qtyCol },
     warnings
@@ -608,18 +665,21 @@ export function convertAllocationsToShipments(
   return allocations.map(alloc => {
     const clinicSnapshot: Partial<Clinic> = alloc.matchedClinic ? {
       ...alloc.matchedClinic,
-      // Ensure doctor name is in English
-      doctorNameEn: alloc.doctorNameEnFromDb,
-      doctorName: alloc.doctorNameJaFromDb
+      name: alloc.matchedClinic.name || alloc.clinicNameCsv,
+      nameEn: alloc.matchedClinic.nameEn || '',
+      doctorName: alloc.doctorNameJaFromDb || alloc.matchedClinic.doctorName || '',
+      doctorNameEn: alloc.doctorNameEnFromDb || alloc.matchedClinic.doctorNameEn || '',
+      phone: alloc.matchedClinic.phone || '',
+      addressEn: alloc.matchedClinic.addressEn || '',
     } : {
       name: alloc.clinicNameCsv,
-      nameEn: alloc.clinicNameCsv,
-      doctorName: alloc.doctorNameJaFromDb,
-      doctorNameEn: alloc.doctorNameEnFromDb,
-      address: '東京都中央区銀座',
-      addressEn: 'Ginza, Chuo-ku, Tokyo, Japan',
-      phone: '03-0000-0000',
-      zip: '100-0001'
+      nameEn: '',
+      doctorName: alloc.doctorNameJaFromDb || '',
+      doctorNameEn: alloc.doctorNameEnFromDb || '',
+      address: '',
+      addressEn: '',
+      phone: '',
+      zip: ''
     };
 
     const items: ShipmentItem[] = alloc.items.map(it => ({

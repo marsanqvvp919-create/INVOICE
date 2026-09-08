@@ -46,7 +46,9 @@ import {
   parseShippingCsv, 
   convertAllocationsToShipments, 
   CsvParseResult, 
-  ParsedClinicAllocation 
+  ParsedClinicAllocation,
+  validateClinicInvoiceCompleteness,
+  ClinicDataValidation
 } from '../lib/csvInvoiceParser';
 import { generateShipmentsZip, generateInvoicePDF } from '../lib/pdf';
 import { SAMPLE_CLINICS_MASTER, SAMPLE_PRODUCTS_MASTER } from '../data/sampleClinicProductData';
@@ -197,7 +199,7 @@ export default function CsvInvoiceImporter({
   const [parseResult, setParseResult] = useState<CsvParseResult | null>(null);
   const [selectedAllocIds, setSelectedAllocIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [filterStatus, setFilterStatus] = useState<'ALL' | 'MATCHED' | 'WARNING'>('ALL');
+  const [filterStatus, setFilterStatus] = useState<'ALL' | 'MATCHED' | 'WARNING' | 'INCOMPLETE'>('ALL');
 
   // Operation States
   const [isParsing, setIsParsing] = useState<boolean>(false);
@@ -413,10 +415,13 @@ export default function CsvInvoiceImporter({
 
       // Status filter
       if (filterStatus === 'MATCHED') {
-        return alloc.isDbMatched && alloc.items.every(it => it.isProductDbMatched);
+        return alloc.isDbMatched && !alloc.clinicValidation.isIncomplete && alloc.items.every(it => it.isProductDbMatched);
+      }
+      if (filterStatus === 'INCOMPLETE') {
+        return alloc.clinicValidation.isIncomplete;
       }
       if (filterStatus === 'WARNING') {
-        return !alloc.isDbMatched || alloc.items.some(it => !it.isProductDbMatched);
+        return !alloc.isDbMatched || alloc.clinicValidation.isIncomplete || alloc.items.some(it => !it.isProductDbMatched);
       }
 
       return true;
@@ -446,8 +451,8 @@ export default function CsvInvoiceImporter({
     // Auto-generate candidate nameEn if none
     let defaultNameEn = existing?.nameEn || '';
     if (!defaultNameEn) {
-      const hasAlpha = /[a-zA-Z]/.test(alloc.clinicNameCsv);
-      defaultNameEn = hasAlpha ? alloc.clinicNameCsv.toUpperCase() : alloc.clinicNameCsv;
+      const isPureLatin = /^[a-zA-Z0-9\s&.,'-]+$/.test(alloc.clinicNameCsv);
+      defaultNameEn = isPureLatin ? alloc.clinicNameCsv.toUpperCase() : '';
     }
 
     // Auto candidate for doctorNameEn:
@@ -579,6 +584,12 @@ export default function CsvInvoiceImporter({
         const nextAllocations = prev.allocations.map(alloc => {
           // If matches target clinic name or ID, apply!
           if (alloc.clinicNameCsv.trim() === targetClinicName.trim() || alloc.id === manualTargetAlloc.id) {
+            const clinicValidation = validateClinicInvoiceCompleteness(resultingClinic);
+            const nextWarnings = alloc.warnings.filter(w => !w.includes('クリニック') && !w.includes('未登録') && !w.includes('データ不十分'));
+            if (clinicValidation.isIncomplete) {
+              nextWarnings.push(`【データ不十分】必須項目未入力: ${clinicValidation.missingFieldLabels.join('、')}`);
+            }
+
             return {
               ...alloc,
               matchedClinic: resultingClinic,
@@ -586,17 +597,20 @@ export default function CsvInvoiceImporter({
               dbLookupSource: saveToMaster ? ('FIRESTORE' as const) : ('MASTER_PRESET' as const),
               doctorNameEnFromDb: cleanDoctorNameEn,
               doctorNameJaFromDb: resultingClinic.doctorName,
-              warnings: alloc.warnings.filter(w => !w.includes('クリニック') && !w.includes('未登録'))
+              clinicValidation,
+              warnings: nextWarnings
             };
           }
           return alloc;
         });
 
         const unmatchedCount = nextAllocations.filter(a => !a.isDbMatched).length;
+        const incompleteCount = nextAllocations.filter(a => a.clinicValidation.isIncomplete).length;
         return {
           ...prev,
           allocations: nextAllocations,
-          unmatchedClinicsCount: unmatchedCount
+          unmatchedClinicsCount: unmatchedCount,
+          incompleteClinicsCount: incompleteCount
         };
       });
 
@@ -618,17 +632,41 @@ export default function CsvInvoiceImporter({
       return;
     }
 
-    // Safety check for unmatched clinics in selection
-    const unmatchedSelected = parseResult?.allocations.filter(a => selectedAllocIds.has(a.id) && !a.isDbMatched) || [];
-    if (unmatchedSelected.length > 0) {
+    // Safety check for incomplete clinic data (クリニック名英語表記、医師名英語表記、電話番号、インボイス用英語住所)
+    const incompleteSelected = parseResult?.allocations.filter(a => selectedAllocIds.has(a.id) && a.clinicValidation.isIncomplete) || [];
+    if (incompleteSelected.length > 0) {
+      const summaryList = incompleteSelected.slice(0, 5).map(a => 
+        `・${a.clinicNameCsv}: 欠落 [${a.clinicValidation.missingFieldLabels.join('、')}]`
+      ).join('\n');
+      const moreMsg = incompleteSelected.length > 5 ? `\n...他 ${incompleteSelected.length - 5} 件` : '';
+
       const confirmProceed = window.confirm(
-        `【ご注意】未登録・不足情報が未入力のクリニックが ${unmatchedSelected.length} 件含まれています。\n` +
-        `（例: ${unmatchedSelected[0].clinicNameCsv}）\n\n` +
-        `このまま出力すると、インボイスの英語住所や医師名が仮の状態で作成されます。\n` +
-        `「手作業で不足分を入力」ボタンから入力することを推奨します。\n\n` +
+        `【警告：クリニックデータ不十分】\n` +
+        `選択されたインボイスの中に、必須情報が欠けているクリニックが ${incompleteSelected.length} 件あります。\n\n` +
+        `対象クリニック:\n${summaryList}${moreMsg}\n\n` +
+        `※商業インボイスの税関申告・配送には以下の4項目がすべて必須です:\n` +
+        `  ①クリニック名英語表記\n` +
+        `  ②医師名英語表記（Dr.不要）\n` +
+        `  ③電話番号\n` +
+        `  ④インボイス用英語住所\n\n` +
+        `欠落したまま出力すると税関保留や宛先不明の原因となる恐れがあります。\n` +
+        `各行の「不足分を入力」ボタンから入力することを推奨します。\n\n` +
         `このままZIP出力を続行しますか？`
       );
       if (!confirmProceed) return;
+    } else {
+      // General unmatched check
+      const unmatchedSelected = parseResult?.allocations.filter(a => selectedAllocIds.has(a.id) && !a.isDbMatched) || [];
+      if (unmatchedSelected.length > 0) {
+        const confirmProceed = window.confirm(
+          `【ご注意】未登録のクリニックが ${unmatchedSelected.length} 件含まれています。\n` +
+          `（例: ${unmatchedSelected[0].clinicNameCsv}）\n\n` +
+          `このまま出力すると、インボイスの英語住所や医師名が仮の状態で作成されます。\n` +
+          `「手作業で不足分を入力」ボタンから入力することを推奨します。\n\n` +
+          `このままZIP出力を続行しますか？`
+        );
+        if (!confirmProceed) return;
+      }
     }
 
     setIsGeneratingZip(true);
@@ -660,17 +698,36 @@ export default function CsvInvoiceImporter({
       return;
     }
 
-    // Safety check for unmatched clinics in selection
-    const unmatchedSelected = parseResult?.allocations.filter(a => selectedAllocIds.has(a.id) && !a.isDbMatched) || [];
-    if (unmatchedSelected.length > 0) {
+    // Safety check for incomplete clinic data (クリニック名英語表記、医師名英語表記、電話番号、インボイス用英語住所)
+    const incompleteSelected = parseResult?.allocations.filter(a => selectedAllocIds.has(a.id) && a.clinicValidation.isIncomplete) || [];
+    if (incompleteSelected.length > 0) {
+      const summaryList = incompleteSelected.slice(0, 5).map(a => 
+        `・${a.clinicNameCsv}: 欠落 [${a.clinicValidation.missingFieldLabels.join('、')}]`
+      ).join('\n');
+      const moreMsg = incompleteSelected.length > 5 ? `\n...他 ${incompleteSelected.length - 5} 件` : '';
+
       const confirmProceed = window.confirm(
-        `【ご注意】未登録・不足情報が未入力のクリニックが ${unmatchedSelected.length} 件含まれています。\n` +
-        `（例: ${unmatchedSelected[0].clinicNameCsv}）\n\n` +
-        `このまま保存すると出荷履歴の住所・医師名情報が不完全になります。\n` +
-        `「手作業で不足分を入力」してから保存することを推奨します。\n\n` +
+        `【警告：クリニックデータ不十分】\n` +
+        `選択されたインボイスの中に、必須情報が欠けているクリニックが ${incompleteSelected.length} 件あります。\n\n` +
+        `対象クリニック:\n${summaryList}${moreMsg}\n\n` +
+        `※出荷履歴DBに保存すると、不完全な宛先・医師名情報で登録されます。\n` +
+        `不足データを手作業で入力してから保存することを推奨します。\n\n` +
         `このまま出荷履歴DBに保存しますか？`
       );
       if (!confirmProceed) return;
+    } else {
+      // General unmatched check
+      const unmatchedSelected = parseResult?.allocations.filter(a => selectedAllocIds.has(a.id) && !a.isDbMatched) || [];
+      if (unmatchedSelected.length > 0) {
+        const confirmProceed = window.confirm(
+          `【ご注意】未登録のクリニックが ${unmatchedSelected.length} 件含まれています。\n` +
+          `（例: ${unmatchedSelected[0].clinicNameCsv}）\n\n` +
+          `このまま保存すると出荷履歴の住所・医師名情報が不完全になります。\n` +
+          `「手作業で不足分を入力」してから保存することを推奨します。\n\n` +
+          `このまま出荷履歴DBに保存しますか？`
+        );
+        if (!confirmProceed) return;
+      }
     }
 
     setIsSavingDb(true);
@@ -970,7 +1027,96 @@ export default function CsvInvoiceImporter({
       {/* Step 2: Parsed & Database Matched Review Section */}
       {parseResult && parseResult.allocations.length > 0 && (
         <div className="space-y-4">
-          {/* Missing Clinics Alert Banner */}
+          {/* Insufficient Clinic Data Alert Banner (User requirement: alert if nameEn, doctorNameEn, phone, or addressEn is missing) */}
+          {parseResult.incompleteClinicsCount > 0 && (
+            <div className="bg-slate-900 border-2 border-rose-500 rounded-2xl p-4 sm:p-5 shadow-2xl relative overflow-hidden ring-4 ring-rose-500/10">
+              <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                <div className="flex items-start gap-3.5">
+                  <div className="w-10 h-10 rounded-xl bg-rose-500 text-white flex items-center justify-center shrink-0 mt-0.5 shadow-lg shadow-rose-500/30">
+                    <AlertTriangle className="w-6 h-6 stroke-[2.5]" />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <h4 className="text-base font-black text-rose-400 tracking-wide">
+                        【警告アラート】クリニックデータ不十分なインボイスが {parseResult.incompleteClinicsCount} 件あります
+                      </h4>
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-rose-500 text-white shadow-sm">
+                        必須4項目の入力が必要です
+                      </span>
+                    </div>
+
+                    <p className="text-sm text-slate-200 leading-relaxed">
+                      商業インボイス（海外向け輸出入・税関申告書類）を発行するには、以下の<strong className="text-white font-bold underline decoration-rose-500 underline-offset-2">4項目すべて</strong>が必要です。<br className="hidden sm:inline" />
+                      いずれか1つでも欠けていると、通関時の保留や宛先不明配送トラブルの原因となります。
+                    </p>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 pb-1">
+                      <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800 text-[11px]">
+                        <span className="text-slate-400 block font-medium">① クリニック名英語表記</span>
+                        <span className="text-rose-400 font-bold">必須（TO: 宛先クリニック）</span>
+                      </div>
+                      <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800 text-[11px]">
+                        <span className="text-slate-400 block font-medium">② 医師名英語表記</span>
+                        <span className="text-rose-400 font-bold">必須（attn: 医師名・Dr.不要）</span>
+                      </div>
+                      <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800 text-[11px]">
+                        <span className="text-slate-400 block font-medium">③ 電話番号</span>
+                        <span className="text-rose-400 font-bold">必須（TEL: 配送連絡先）</span>
+                      </div>
+                      <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800 text-[11px]">
+                        <span className="text-slate-400 block font-medium">④ インボイス用英語住所</span>
+                        <span className="text-rose-400 font-bold">必須（Address: 配送先住所）</span>
+                      </div>
+                    </div>
+
+                    {/* Quick Clinic Repair List */}
+                    <div className="pt-2.5 border-t border-slate-800/80">
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                        <span className="text-xs font-bold text-rose-300">
+                          データ不十分なクリニック一覧（クリックして不足項目を入力）:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setFilterStatus('INCOMPLETE')}
+                          className="text-xs font-bold text-rose-400 hover:text-rose-300 underline cursor-pointer"
+                        >
+                          不十分なクリニックのみ絞り込み表示 ({parseResult.incompleteClinicsCount}件)
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        {Array.from(new Set(parseResult.allocations.filter(a => a.clinicValidation.isIncomplete).map(a => a.clinicNameCsv))).map(name => {
+                          const targetAlloc = parseResult.allocations.find(a => a.clinicNameCsv === name);
+                          const missingLabels = targetAlloc?.clinicValidation.missingFieldLabels || [];
+                          return (
+                            <button
+                              key={name}
+                              type="button"
+                              onClick={() => targetAlloc && handleOpenManualModal(targetAlloc)}
+                              className="px-3 py-1.5 rounded-xl text-xs bg-slate-950 hover:bg-slate-800 border-2 border-rose-500/70 hover:border-rose-400 flex items-center gap-2 transition-all cursor-pointer shadow-md hover:scale-[1.02] group"
+                            >
+                              <Building2 className="w-4 h-4 text-rose-400 shrink-0" />
+                              <div className="text-left">
+                                <span className="font-bold text-white block">{name}</span>
+                                <span className="text-[10px] text-rose-300 font-normal">
+                                  欠落: {missingLabels.join('・')}
+                                </span>
+                              </div>
+                              <span className="ml-1 px-2 py-0.5 rounded-md bg-rose-500 group-hover:bg-rose-400 text-white font-black text-[11px] flex items-center gap-1 shadow-sm shrink-0">
+                                <Edit3 className="w-3 h-3" />
+                                不足分を入力
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Missing Clinics in DB Alert Banner */}
           {parseResult.unmatchedClinicsCount > 0 && (
             <div className="bg-slate-900 border-2 border-amber-500 rounded-2xl p-4 sm:p-5 shadow-2xl relative overflow-hidden">
               <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
@@ -984,7 +1130,7 @@ export default function CsvInvoiceImporter({
                         【要確認】マスタに未登録のクリニックが {parseResult.unmatchedClinicsCount} 件あります
                       </h4>
                       <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-amber-500 text-slate-950 shadow-sm">
-                        不足情報の入力が必要です
+                        マスタ登録推奨
                       </span>
                     </div>
 
@@ -1063,18 +1209,18 @@ export default function CsvInvoiceImporter({
             </div>
 
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow-md">
-              <span className="text-xs font-bold text-slate-400 block">データベース照合状態</span>
+              <span className="text-xs font-bold text-slate-400 block">インボイス必須データ充足状態</span>
               <div className="flex items-baseline gap-2 mt-1">
-                <span className={`text-lg font-black font-mono ${parseResult.unmatchedClinicsCount === 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                  {parseResult.totalClinics - parseResult.unmatchedClinicsCount} / {parseResult.totalClinics}
+                <span className={`text-lg font-black font-mono ${parseResult.incompleteClinicsCount === 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {parseResult.totalClinics - parseResult.incompleteClinicsCount} / {parseResult.totalClinics}
                 </span>
-                <span className="text-xs text-slate-400">院 DB照合完了</span>
+                <span className="text-xs text-slate-400">院 充足完了</span>
               </div>
               <div className="mt-1 flex items-center justify-between">
-                <span className="text-[10px] text-slate-400">
-                  {parseResult.unmatchedClinicsCount === 0 
-                    ? '全クリニックの住所・医師名を取得済' 
-                    : `${parseResult.unmatchedClinicsCount}件 未登録`}
+                <span className={`text-[10px] font-semibold ${parseResult.incompleteClinicsCount === 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {parseResult.incompleteClinicsCount === 0 
+                    ? '全クリニックの必須4項目充足済' 
+                    : `⚠️ ${parseResult.incompleteClinicsCount}件 データ不十分`}
                 </span>
                 {parseResult.unmatchedClinicsCount > 0 && (
                   <button
@@ -1134,15 +1280,16 @@ export default function CsvInvoiceImporter({
                   onClick={() => setFilterStatus('MATCHED')}
                   className={`px-2.5 py-1 rounded font-medium ${filterStatus === 'MATCHED' ? 'bg-emerald-950 text-emerald-300 font-bold' : 'text-slate-400'}`}
                 >
-                  照合済 ({parseResult.allocations.length - parseResult.unmatchedClinicsCount})
+                  データ完備 ({parseResult.allocations.length - parseResult.incompleteClinicsCount})
                 </button>
-                {parseResult.unmatchedClinicsCount > 0 && (
+                {parseResult.incompleteClinicsCount > 0 && (
                   <button
                     type="button"
-                    onClick={() => setFilterStatus('WARNING')}
-                    className={`px-2.5 py-1 rounded font-medium ${filterStatus === 'WARNING' ? 'bg-amber-950 text-amber-300 font-bold' : 'text-slate-400'}`}
+                    onClick={() => setFilterStatus('INCOMPLETE')}
+                    className={`px-2.5 py-1 rounded font-medium flex items-center gap-1.5 ${filterStatus === 'INCOMPLETE' ? 'bg-rose-500 text-white font-black' : 'text-rose-400 font-bold hover:bg-rose-500/10'}`}
                   >
-                    未登録あり ({parseResult.unmatchedClinicsCount})
+                    <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                    <span>データ不十分 ({parseResult.incompleteClinicsCount})</span>
                   </button>
                 )}
               </div>
@@ -1186,24 +1333,48 @@ export default function CsvInvoiceImporter({
           <div className="space-y-3">
             {filteredAllocations.map((alloc, idx) => {
               const isSelected = selectedAllocIds.has(alloc.id);
+              const isIncomplete = alloc.clinicValidation.isIncomplete;
 
               return (
                 <div
                   key={alloc.id}
                   className={`bg-slate-900 border rounded-xl overflow-hidden transition-all shadow-md ${
-                    !alloc.isDbMatched 
+                    isIncomplete
+                      ? 'border-rose-500 ring-2 ring-rose-500/30 shadow-lg shadow-rose-950/20'
+                      : !alloc.isDbMatched 
                       ? 'border-amber-500/50 ring-1 ring-amber-500/20' 
                       : isSelected 
                       ? 'border-slate-700 ring-1 ring-blue-500/20' 
                       : 'border-slate-800/80 opacity-70'
                   }`}
                 >
-                  {/* Missing Clinic Urgent Alert Strip */}
-                  {!alloc.isDbMatched && (
+                  {/* Missing Clinic Urgent Alert Strip (Priority 1: Incomplete Invoice Data) */}
+                  {isIncomplete ? (
+                    <div className="bg-rose-500/20 border-b border-rose-500/40 px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2 text-rose-300 font-bold">
+                        <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                        <span>
+                          【警告アラート】インボイス作成用データ不十分:
+                          <span className="text-white font-black ml-1.5 underline decoration-rose-400">
+                            {alloc.clinicValidation.missingFieldLabels.join('、')}
+                          </span>
+                          が欠けています
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenManualModal(alloc)}
+                        className="px-3 py-1 rounded-lg bg-rose-500 hover:bg-rose-400 text-white font-black text-xs flex items-center gap-1.5 transition-all shadow-md shadow-rose-500/30 shrink-0 cursor-pointer"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>不足分を入力して解消</span>
+                      </button>
+                    </div>
+                  ) : !alloc.isDbMatched ? (
                     <div className="bg-amber-500/15 border-b border-amber-500/30 px-3.5 py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
                       <div className="flex items-center gap-2 text-amber-300 font-bold">
                         <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-                        <span>クリニックマスタ未登録：英語住所・医師名などの不足情報が入力されていません</span>
+                        <span>クリニックマスタ未登録：英語住所・医師名などの情報をご確認ください</span>
                       </div>
                       <button
                         type="button"
@@ -1214,7 +1385,7 @@ export default function CsvInvoiceImporter({
                         <span>手作業で不足分を入力</span>
                       </button>
                     </div>
-                  )}
+                  ) : null}
 
                   {/* Allocation Header */}
                   <div className="bg-slate-950/60 p-3.5 border-b border-slate-800/80 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -1242,21 +1413,26 @@ export default function CsvInvoiceImporter({
                             システム自動採番（CSVのC列「{alloc.csvIgnoredInvoiceNo || '未指定'}」は無視）
                           </span>
                         </div>
-                        <div className="text-xs font-bold text-slate-200 mt-0.5 flex items-center gap-1.5">
+                        <div className="text-xs font-bold text-slate-200 mt-0.5 flex flex-wrap items-center gap-1.5">
                           <span>{alloc.clinicNameCsv}</span>
-                          {alloc.isDbMatched ? (
-                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 font-bold flex items-center gap-1">
+                          {isIncomplete ? (
+                            <span className="text-[9px] px-2 py-0.5 rounded bg-rose-500/25 text-rose-300 border border-rose-500/50 font-black flex items-center gap-1 shadow-xs">
+                              <AlertTriangle className="w-3 h-3 text-rose-400" />
+                              データ不十分 ({alloc.clinicValidation.missingFieldLabels.join('・')} 欠落)
+                            </span>
+                          ) : alloc.isDbMatched ? (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 font-bold flex items-center gap-1">
                               <ShieldCheck className="w-2.5 h-2.5" />
-                              照合完了
+                              必須4項目完備
                             </span>
                           ) : alloc.dbLookupSource === 'MASTER_PRESET' ? (
-                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-500/15 text-indigo-400 border border-indigo-500/20 font-bold">
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-400 border border-indigo-500/20 font-bold">
                               マスタプリセット自動補完
                             </span>
                           ) : (
-                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20 font-bold flex items-center gap-1">
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20 font-bold flex items-center gap-1">
                               <AlertCircle className="w-2.5 h-2.5" />
-                              未登録（不足情報あり）
+                              マスタ未登録
                             </span>
                           )}
                         </div>
@@ -1268,8 +1444,8 @@ export default function CsvInvoiceImporter({
                       {/* Recipient note */}
                       <div className="text-right hidden sm:block">
                         <div className="text-slate-400 text-[10px]">宛名（医師名）</div>
-                        <div className="text-slate-200 font-bold font-mono">
-                          {alloc.doctorNameEnFromDb || '（未入力）'}
+                        <div className={`font-bold font-mono ${alloc.clinicValidation.hasDoctorNameEn ? 'text-slate-200' : 'text-rose-400 font-black'}`}>
+                          {alloc.doctorNameEnFromDb || alloc.matchedClinic?.doctorNameEn || '⚠️ 未入力'}
                         </div>
                         <div className="text-[9px] text-slate-500">
                           {alloc.isDbMatched ? 'マスタ/手動入力参照' : `CSV B列「${alloc.csvIgnoredRecipient || '未指定'}」は無視`}
@@ -1290,14 +1466,16 @@ export default function CsvInvoiceImporter({
                         type="button"
                         onClick={() => handleOpenManualModal(alloc)}
                         className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 text-xs font-semibold cursor-pointer transition-all ${
-                          !alloc.isDbMatched 
+                          isIncomplete
+                            ? 'bg-rose-600 hover:bg-rose-500 text-white font-bold border-rose-500 shadow-sm shadow-rose-600/30'
+                            : !alloc.isDbMatched 
                             ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold border-amber-400 shadow-sm shadow-amber-500/20' 
                             : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border-slate-700'
                         }`}
-                        title="クリニック不足情報の入力・修正"
+                        title="クリニック必須情報の入力・修正"
                       >
                         <Edit3 className="w-3.5 h-3.5" />
-                        <span>{alloc.isDbMatched ? '情報修正' : '不足分入力'}</span>
+                        <span>{isIncomplete ? '不足分を入力' : alloc.isDbMatched ? '情報修正' : '不足分入力'}</span>
                       </button>
 
                       {/* Preview Button */}
@@ -1310,6 +1488,77 @@ export default function CsvInvoiceImporter({
                         <Eye className="w-3.5 h-3.5 text-blue-400" />
                         <span>プレビュー</span>
                       </button>
+                    </div>
+                  </div>
+
+                  {/* 4 Required Fields Verification Row */}
+                  <div className="bg-slate-950/80 px-3.5 py-2 border-b border-slate-800/80 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-[11px]">
+                    {/* Field 1: Clinic Name En */}
+                    <div className={`p-1.5 px-2 rounded-lg border flex items-center justify-between gap-2 ${
+                      alloc.clinicValidation.hasNameEn ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
+                    }`}>
+                      <div className="truncate min-w-0">
+                        <span className="text-[9px] text-slate-400 block font-medium">① 英語クリニック名</span>
+                        <span className={`font-mono font-bold truncate block ${alloc.clinicValidation.hasNameEn ? 'text-white' : 'text-rose-300'}`}>
+                          {alloc.matchedClinic?.nameEn || (alloc.clinicValidation.hasNameEn ? alloc.clinicNameCsv : '⚠️ 未入力')}
+                        </span>
+                      </div>
+                      {alloc.clinicValidation.hasNameEn ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-black text-[9px] shrink-0">欠落</span>
+                      )}
+                    </div>
+
+                    {/* Field 2: Doctor Name En */}
+                    <div className={`p-1.5 px-2 rounded-lg border flex items-center justify-between gap-2 ${
+                      alloc.clinicValidation.hasDoctorNameEn ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
+                    }`}>
+                      <div className="truncate min-w-0">
+                        <span className="text-[9px] text-slate-400 block font-medium">② 医師名（英語・Dr.不要）</span>
+                        <span className={`font-mono font-bold truncate block ${alloc.clinicValidation.hasDoctorNameEn ? 'text-white' : 'text-rose-300'}`}>
+                          {alloc.doctorNameEnFromDb || alloc.matchedClinic?.doctorNameEn || '⚠️ 未入力'}
+                        </span>
+                      </div>
+                      {alloc.clinicValidation.hasDoctorNameEn ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-black text-[9px] shrink-0">欠落</span>
+                      )}
+                    </div>
+
+                    {/* Field 3: Phone */}
+                    <div className={`p-1.5 px-2 rounded-lg border flex items-center justify-between gap-2 ${
+                      alloc.clinicValidation.hasPhone ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
+                    }`}>
+                      <div className="truncate min-w-0">
+                        <span className="text-[9px] text-slate-400 block font-medium">③ 電話番号</span>
+                        <span className={`font-mono font-bold truncate block ${alloc.clinicValidation.hasPhone ? 'text-white' : 'text-rose-300'}`}>
+                          {alloc.matchedClinic?.phone || '⚠️ 未入力'}
+                        </span>
+                      </div>
+                      {alloc.clinicValidation.hasPhone ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-black text-[9px] shrink-0">欠落</span>
+                      )}
+                    </div>
+
+                    {/* Field 4: Address En */}
+                    <div className={`p-1.5 px-2 rounded-lg border flex items-center justify-between gap-2 ${
+                      alloc.clinicValidation.hasAddressEn ? 'bg-slate-900 border-slate-800 text-slate-300' : 'bg-rose-950/40 border-rose-500/60 text-rose-200'
+                    }`}>
+                      <div className="truncate min-w-0">
+                        <span className="text-[9px] text-slate-400 block font-medium">④ インボイス用英語住所</span>
+                        <span className={`font-mono font-bold truncate block ${alloc.clinicValidation.hasAddressEn ? 'text-white' : 'text-rose-300'}`}>
+                          {alloc.matchedClinic?.addressEn || '⚠️ 未入力'}
+                        </span>
+                      </div>
+                      {alloc.clinicValidation.hasAddressEn ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-black text-[9px] shrink-0">欠落</span>
+                      )}
                     </div>
                   </div>
 
@@ -1400,6 +1649,26 @@ export default function CsvInvoiceImporter({
               </div>
             </div>
 
+            {/* Single Invoice PDF Preview Incomplete Warning */}
+            {(() => {
+              const val = validateClinicInvoiceCompleteness(previewShipment.clinicSnapshot);
+              if (val.isIncomplete) {
+                return (
+                  <div className="bg-rose-500/20 border-b border-rose-500/40 px-5 py-2.5 flex items-center justify-between gap-3 text-xs text-rose-300">
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>
+                        【警告】インボイス必須項目が欠落しています: 
+                        <strong className="text-white font-bold ml-1">{val.missingFieldLabels.join('、')}</strong>
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-rose-200">※通関時に保留されるリスクがあります</span>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
             {/* Modal Body / PDF Iframe */}
             <div className="flex-1 bg-slate-950 p-2 overflow-hidden flex items-center justify-center min-h-[500px]">
               {previewPdfUrl ? (
@@ -1456,6 +1725,25 @@ export default function CsvInvoiceImporter({
 
             {/* Modal Body / Form */}
             <form onSubmit={handlePromptConfirmMaster} className="p-5 space-y-4 max-h-[75vh] overflow-y-auto text-xs">
+              {/* Insufficient Data Alert in Modal */}
+              {manualTargetAlloc.clinicValidation.isIncomplete && (
+                <div className="p-3.5 rounded-xl bg-rose-500/15 border-2 border-rose-500/40 text-rose-300 flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="text-xs space-y-1">
+                    <div className="font-bold text-rose-200 flex items-center gap-1.5">
+                      <span className="text-sm font-black">【データ不十分アラート】</span>
+                      <span>海外インボイス必須項目が欠けています</span>
+                    </div>
+                    <p className="text-white font-medium">
+                      未入力の項目: <strong className="underline decoration-rose-400 text-rose-200 font-mono font-bold">【{manualTargetAlloc.clinicValidation.missingFieldLabels.join('、')}】</strong>
+                    </p>
+                    <p className="text-[11px] text-rose-300 leading-normal">
+                      ※商業インボイスの作成には「クリニック名英語表記」「医師名英語表記（Dr.不要）」「電話番号」「英語住所」の4項目がすべて必須です。
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* CSV Raw Context Information Notice */}
               <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                 <div>
@@ -1507,8 +1795,14 @@ export default function CsvInvoiceImporter({
                 {/* Clinic Name (English) */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="text-slate-300 font-bold">
-                      クリニック名（英語表記） <span className="text-rose-400">*</span>
+                    <label className="text-slate-300 font-bold flex items-center gap-1.5">
+                      <span>クリニック名（英語表記）</span>
+                      <span className="text-rose-400">*</span>
+                      {!manualForm.nameEn.trim() ? (
+                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold">必須・未入力</span>
+                      ) : (
+                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold">充足</span>
+                      )}
                     </label>
                     <button
                       type="button"
@@ -1524,7 +1818,9 @@ export default function CsvInvoiceImporter({
                     value={manualForm.nameEn}
                     onChange={(e) => setManualForm({ ...manualForm, nameEn: e.target.value })}
                     placeholder="例: 5DENTAL TOKYO GINZA"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono uppercase"
+                    className={`w-full bg-slate-950 border rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:ring-1 focus:ring-blue-500 font-mono uppercase ${
+                      !manualForm.nameEn.trim() ? 'border-rose-500/80 focus:border-rose-500' : 'border-slate-800 focus:border-blue-500'
+                    }`}
                   />
                 </div>
               </div>
@@ -1534,7 +1830,13 @@ export default function CsvInvoiceImporter({
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-slate-300 font-bold flex items-center gap-1.5">
                     <MapPin className="w-3.5 h-3.5 text-blue-400" />
-                    <span>英語住所（Address in English） <span className="text-rose-400">*</span></span>
+                    <span>英語住所（Address in English）</span>
+                    <span className="text-rose-400">*</span>
+                    {!manualForm.addressEn.trim() ? (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold">必須・未入力</span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold">充足</span>
+                    )}
                   </label>
                   <button
                     type="button"
@@ -1557,7 +1859,9 @@ export default function CsvInvoiceImporter({
                   value={manualForm.addressEn}
                   onChange={(e) => setManualForm({ ...manualForm, addressEn: e.target.value })}
                   placeholder="例: 3F Ginza Medical Bldg, 5-1-1 Ginza, Chuo-ku, Tokyo 104-0061, Japan"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono"
+                  className={`w-full bg-slate-950 border rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:ring-1 focus:ring-blue-500 font-mono ${
+                    !manualForm.addressEn.trim() ? 'border-rose-500/80 focus:border-rose-500' : 'border-slate-800 focus:border-blue-500'
+                  }`}
                 />
                 <span className="text-[10px] text-slate-500 block mt-0.5">
                   ※インボイスPDFの宛先住所に直接印字されます（ビル名・番地・市区町村・国名）
@@ -1568,8 +1872,14 @@ export default function CsvInvoiceImporter({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* Doctor Name (English) - Dr. excluded */}
                 <div>
-                  <label className="block text-slate-300 font-bold mb-1">
-                    医師名（英語表記） <span className="text-rose-400">*</span>
+                  <label className="block text-slate-300 font-bold mb-1 flex items-center gap-1.5">
+                    <span>医師名（英語表記）</span>
+                    <span className="text-rose-400">*</span>
+                    {!manualForm.doctorNameEn.trim() ? (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold">必須・未入力</span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold">充足</span>
+                    )}
                   </label>
                   <input
                     type="text"
@@ -1581,7 +1891,9 @@ export default function CsvInvoiceImporter({
                       setManualForm({ ...manualForm, doctorNameEn: sanitized });
                     }}
                     placeholder="例: TARO YAMADA （Dr.不要）"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono uppercase"
+                    className={`w-full bg-slate-950 border rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:ring-1 focus:ring-blue-500 font-mono uppercase ${
+                      !manualForm.doctorNameEn.trim() ? 'border-rose-500/80 focus:border-rose-500' : 'border-slate-800 focus:border-blue-500'
+                    }`}
                   />
                   <span className="text-[10px] text-amber-400 block mt-0.5 font-medium">
                     ※「Dr.」の入力は不要です（入力された場合も自動で除去されます）
@@ -1592,7 +1904,13 @@ export default function CsvInvoiceImporter({
                 <div>
                   <label className="block text-slate-300 font-bold mb-1 flex items-center gap-1.5">
                     <Phone className="w-3.5 h-3.5 text-blue-400" />
-                    <span>電話番号（Phone） <span className="text-rose-400">*</span></span>
+                    <span>電話番号（Phone）</span>
+                    <span className="text-rose-400">*</span>
+                    {!manualForm.phone.trim() ? (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold">必須・未入力</span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold">充足</span>
+                    )}
                   </label>
                   <input
                     type="text"
@@ -1600,7 +1918,9 @@ export default function CsvInvoiceImporter({
                     value={manualForm.phone}
                     onChange={(e) => setManualForm({ ...manualForm, phone: e.target.value })}
                     placeholder="例: 03-1234-5678"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono"
+                    className={`w-full bg-slate-950 border rounded-lg px-3 py-2 text-white placeholder:text-slate-600 outline-none focus:ring-1 focus:ring-blue-500 font-mono ${
+                      !manualForm.phone.trim() ? 'border-rose-500/80 focus:border-rose-500' : 'border-slate-800 focus:border-blue-500'
+                    }`}
                   />
                 </div>
               </div>
