@@ -33,7 +33,11 @@ import {
   MapPin,
   Phone,
   UserCheck,
-  Info
+  Info,
+  Trash2,
+  Save,
+  SlidersHorizontal,
+  Plus
 } from 'lucide-react';
 import { 
   Clinic, 
@@ -236,6 +240,32 @@ export default function CsvInvoiceImporter({
     corporationName: '',
     contactPerson: ''
   });
+
+  // Item Editing Modal State (SKU名, 商品名, 価格, 数量, 単位)
+  const [editingItemModal, setEditingItemModal] = useState<{
+    allocId: string;
+    itemId: string;
+    clinicName: string;
+    invoiceNo: string;
+    productNameCsv: string;
+    sku: string;
+    nameEn: string;
+    nameJa: string;
+    unitPrice: number;
+    qty: number;
+    unit: string;
+  } | null>(null);
+
+  // Inline Row Editing State
+  const [inlineEditingRowKey, setInlineEditingRowKey] = useState<string | null>(null); // `${allocId}_${itemId}`
+  const [inlineDraft, setInlineDraft] = useState<{
+    sku: string;
+    nameEn: string;
+    nameJa: string;
+    unitPrice: number;
+    qty: number;
+    unit: string;
+  } | null>(null);
 
   // Preview Modal
   const [previewShipment, setPreviewShipment] = useState<Shipment | null>(null);
@@ -623,6 +653,279 @@ export default function CsvInvoiceImporter({
     } finally {
       setIsSavingMaster(false);
     }
+  };
+
+  // Update an item in an allocation (SKU名, 商品名, 価格, 数量)
+  const handleUpdateItem = (
+    allocId: string,
+    itemId: string,
+    updates: {
+      sku: string;
+      nameEn: string;
+      nameJa: string;
+      unitPrice: number;
+      qty: number;
+      unit?: string;
+    }
+  ) => {
+    setParseResult(prev => {
+      if (!prev) return null;
+
+      const nextAllocations = prev.allocations.map(alloc => {
+        if (alloc.id !== allocId) return alloc;
+
+        const nextItems = alloc.items.map(it => {
+          if (it.id !== itemId) return it;
+
+          const newQty = Math.max(1, Number(updates.qty) || 1);
+          const newUnitPrice = Math.max(0, Number(updates.unitPrice) || 0);
+          const newAmount = Math.round(newQty * newUnitPrice);
+          const newTotalWeight = parseFloat((newQty * (it.weight || 0.04)).toFixed(3));
+
+          // Check if there is a matching product in products master
+          const cleanSku = updates.sku.trim();
+          const cleanNameEn = updates.nameEn.trim();
+          const matchedInDb = products.find(p => 
+            (cleanSku && p.sku && p.sku.toLowerCase() === cleanSku.toLowerCase()) ||
+            (cleanNameEn && p.nameEn && p.nameEn.toLowerCase() === cleanNameEn.toLowerCase())
+          );
+
+          return {
+            ...it,
+            sku: cleanSku || it.sku,
+            nameEn: cleanNameEn || it.nameEn,
+            nameJa: updates.nameJa.trim(),
+            qty: newQty,
+            unit: updates.unit || it.unit,
+            unitPrice: newUnitPrice,
+            amount: newAmount,
+            totalWeight: newTotalWeight,
+            matchedProduct: matchedInDb || it.matchedProduct,
+            isProductDbMatched: Boolean(matchedInDb) || newUnitPrice > 0
+          };
+        });
+
+        const nextTotalQty = nextItems.reduce((sum, it) => sum + it.qty, 0);
+        const nextTotalAmount = nextItems.reduce((sum, it) => sum + it.amount, 0);
+        const nextTotalWeight = parseFloat(nextItems.reduce((sum, it) => sum + it.totalWeight, 0).toFixed(3));
+
+        // Refresh warnings
+        const nextWarnings = alloc.warnings.filter(w => !w.includes('単価が取得できません') && !w.includes('インボイス単価が0円'));
+        for (const it of nextItems) {
+          if (it.unitPrice === 0) {
+            nextWarnings.push(`製剤「${it.nameJa || it.nameEn}」のインボイス単価が0円に設定されています。`);
+          }
+        }
+
+        return {
+          ...alloc,
+          items: nextItems,
+          totalQty: nextTotalQty,
+          totalAmount: nextTotalAmount,
+          totalWeight: nextTotalWeight,
+          warnings: nextWarnings
+        };
+      });
+
+      const nextTotalItemsCount = nextAllocations.reduce((s, a) => s + a.items.length, 0);
+      const nextTotalQuantity = nextAllocations.reduce((s, a) => s + a.totalQty, 0);
+      const nextTotalAmount = nextAllocations.reduce((s, a) => s + a.totalAmount, 0);
+      const nextUnmatchedProducts = nextAllocations.reduce((s, a) => s + a.items.filter(it => !it.isProductDbMatched && it.unitPrice === 0).length, 0);
+
+      return {
+        ...prev,
+        allocations: nextAllocations,
+        totalItemsCount: nextTotalItemsCount,
+        totalQuantity: nextTotalQuantity,
+        totalAmount: nextTotalAmount,
+        unmatchedProductsCount: nextUnmatchedProducts
+      };
+    });
+  };
+
+  // Start inline editing for a table row
+  const handleStartInlineEdit = (alloc: ParsedClinicAllocation, it: ParsedClinicAllocation['items'][0]) => {
+    setInlineEditingRowKey(`${alloc.id}_${it.id}`);
+    setInlineDraft({
+      sku: it.sku,
+      nameEn: it.nameEn,
+      nameJa: it.nameJa,
+      unitPrice: it.unitPrice,
+      qty: it.qty,
+      unit: it.unit
+    });
+  };
+
+  // Save inline editing
+  const handleSaveInlineEdit = (allocId: string, itemId: string) => {
+    if (!inlineDraft) return;
+    handleUpdateItem(allocId, itemId, inlineDraft);
+    setInlineEditingRowKey(null);
+    setInlineDraft(null);
+    showToast('品目情報（SKU・商品名・価格・数量）を更新しました。', 'success');
+  };
+
+  // Cancel inline editing
+  const handleCancelInlineEdit = () => {
+    setInlineEditingRowKey(null);
+    setInlineDraft(null);
+  };
+
+  // Open modal item editing
+  const handleOpenItemEditModal = (alloc: ParsedClinicAllocation, it: ParsedClinicAllocation['items'][0]) => {
+    setEditingItemModal({
+      allocId: alloc.id,
+      itemId: it.id,
+      clinicName: alloc.clinicNameCsv,
+      invoiceNo: alloc.systemGeneratedInvoiceNo,
+      productNameCsv: it.productNameCsv,
+      sku: it.sku,
+      nameEn: it.nameEn,
+      nameJa: it.nameJa,
+      unitPrice: it.unitPrice,
+      qty: it.qty,
+      unit: it.unit
+    });
+  };
+
+  // Select master product in modal
+  const handleSelectMasterProduct = (productId: string) => {
+    const chosen = products.find(p => p.id === productId);
+    if (!chosen || !editingItemModal) return;
+
+    const resolvedPrice = (typeof chosen.invoicePrice === 'number' && !isNaN(chosen.invoicePrice))
+      ? chosen.invoicePrice
+      : ((typeof chosen.purchasePrice === 'number' && !isNaN(chosen.purchasePrice)) ? chosen.purchasePrice : 0);
+
+    setEditingItemModal(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        sku: chosen.sku || prev.sku,
+        nameEn: chosen.nameEn || prev.nameEn,
+        nameJa: chosen.nameJa || prev.nameJa,
+        unitPrice: resolvedPrice,
+        unit: chosen.unit || prev.unit
+      };
+    });
+    showToast(`製剤マスタ「${chosen.nameEn}」の情報を自動反映しました（SKU・商品名・単価）。`, 'info');
+  };
+
+  // Save modal item edit
+  const handleSaveModalItem = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingItemModal) return;
+    handleUpdateItem(editingItemModal.allocId, editingItemModal.itemId, {
+      sku: editingItemModal.sku,
+      nameEn: editingItemModal.nameEn,
+      nameJa: editingItemModal.nameJa,
+      unitPrice: editingItemModal.unitPrice,
+      qty: editingItemModal.qty,
+      unit: editingItemModal.unit
+    });
+    setEditingItemModal(null);
+    showToast('品目情報（SKU・商品名・価格・数量）を更新しました！', 'success');
+  };
+
+  // Delete item from allocation
+  const handleDeleteItem = (allocId: string, itemId: string) => {
+    const alloc = parseResult?.allocations.find(a => a.id === allocId);
+    if (alloc && alloc.items.length <= 1) {
+      showToast('インボイスには最低1つの品目が必要です（削除できません）。', 'error');
+      return;
+    }
+    if (!window.confirm('この品目をインボイスから削除してもよろしいですか？')) return;
+
+    setParseResult(prev => {
+      if (!prev) return null;
+      const nextAllocations = prev.allocations.map(a => {
+        if (a.id !== allocId) return a;
+        const nextItems = a.items.filter(it => it.id !== itemId);
+        const nextTotalQty = nextItems.reduce((s, it) => s + it.qty, 0);
+        const nextTotalAmount = nextItems.reduce((s, it) => s + it.amount, 0);
+        const nextTotalWeight = parseFloat(nextItems.reduce((s, it) => s + it.totalWeight, 0).toFixed(3));
+        return {
+          ...a,
+          items: nextItems,
+          totalQty: nextTotalQty,
+          totalAmount: nextTotalAmount,
+          totalWeight: nextTotalWeight
+        };
+      });
+
+      return {
+        ...prev,
+        allocations: nextAllocations,
+        totalItemsCount: nextAllocations.reduce((s, a) => s + a.items.length, 0),
+        totalQuantity: nextAllocations.reduce((s, a) => s + a.totalQty, 0),
+        totalAmount: nextAllocations.reduce((s, a) => s + a.totalAmount, 0)
+      };
+    });
+    showToast('品目を削除しました。', 'info');
+  };
+
+  // Add new item to allocation
+  const handleAddItem = (allocId: string) => {
+    const defaultProd = products[0];
+    const initialPrice = defaultProd ? ((typeof defaultProd.invoicePrice === 'number' && !isNaN(defaultProd.invoicePrice)) ? defaultProd.invoicePrice : (defaultProd.purchasePrice || 0)) : 0;
+    const newItem = {
+      id: `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      productNameCsv: defaultProd?.nameEn || '新規品目',
+      matchedProduct: defaultProd || null,
+      isProductDbMatched: Boolean(defaultProd),
+      sku: defaultProd?.sku || `SKU-${Date.now().toString().slice(-4)}`,
+      nameEn: defaultProd?.nameEn || 'New Product',
+      nameJa: defaultProd?.nameJa || '',
+      qty: 1,
+      unit: defaultProd?.unit || 'pcs',
+      unitPrice: initialPrice,
+      amount: initialPrice,
+      weight: defaultProd?.weight || 0.04,
+      totalWeight: defaultProd?.weight || 0.04,
+      hsCode: defaultProd?.hsCode || '3004.90',
+      countryOfOrigin: defaultProd?.countryOfOrigin || 'KR'
+    };
+
+    setParseResult(prev => {
+      if (!prev) return null;
+      const nextAllocations = prev.allocations.map(a => {
+        if (a.id !== allocId) return a;
+        const nextItems = [...a.items, newItem];
+        const nextTotalQty = nextItems.reduce((s, it) => s + it.qty, 0);
+        const nextTotalAmount = nextItems.reduce((s, it) => s + it.amount, 0);
+        const nextTotalWeight = parseFloat(nextItems.reduce((s, it) => s + it.totalWeight, 0).toFixed(3));
+        return {
+          ...a,
+          items: nextItems,
+          totalQty: nextTotalQty,
+          totalAmount: nextTotalAmount,
+          totalWeight: nextTotalWeight
+        };
+      });
+      return {
+        ...prev,
+        allocations: nextAllocations,
+        totalItemsCount: nextAllocations.reduce((s, a) => s + a.items.length, 0),
+        totalQuantity: nextAllocations.reduce((s, a) => s + a.totalQty, 0),
+        totalAmount: nextAllocations.reduce((s, a) => s + a.totalAmount, 0)
+      };
+    });
+
+    const targetAlloc = parseResult?.allocations.find(a => a.id === allocId);
+    setEditingItemModal({
+      allocId,
+      itemId: newItem.id,
+      clinicName: targetAlloc?.clinicNameCsv || '',
+      invoiceNo: targetAlloc?.systemGeneratedInvoiceNo || '',
+      productNameCsv: newItem.productNameCsv,
+      sku: newItem.sku,
+      nameEn: newItem.nameEn,
+      nameJa: newItem.nameJa,
+      unitPrice: newItem.unitPrice,
+      qty: newItem.qty,
+      unit: newItem.unit
+    });
+    showToast('新しい品目を追加しました。内容を編集してください。', 'success');
   };
 
   // Action: Export ZIP of all Invoices
@@ -1579,46 +1882,200 @@ export default function CsvInvoiceImporter({
                     </div>
                   </div>
 
+                  {/* Items List Table Header */}
+                  <div className="px-4 py-2 bg-slate-950/70 border-b border-slate-800/80 flex items-center justify-between">
+                    <div className="text-xs font-bold text-slate-300 flex items-center gap-2">
+                      <Package className="w-3.5 h-3.5 text-blue-400" />
+                      <span>インボイス品目明細 ({alloc.items.length}件)</span>
+                      <span className="text-[10px] text-slate-500 hidden sm:inline">※SKU名・商品名・価格・数量は個別に編集可能です</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleAddItem(alloc.id)}
+                      className="px-2.5 py-1 rounded-md bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 hover:text-white border border-blue-500/30 text-[11px] font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
+                      title="このインボイスに品目を追加"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>品目を追加</span>
+                    </button>
+                  </div>
+
                   {/* Items List Table */}
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs">
                       <thead className="bg-slate-950/40 text-slate-400 text-[10px] uppercase font-bold border-b border-slate-800/60">
                         <tr>
-                          <th className="py-2 px-4">品目名（製剤）</th>
-                          <th className="py-2 px-3">SKU</th>
-                          <th className="py-2 px-3 text-right">個数 (F列)</th>
-                          <th className="py-2 px-3 text-right">DB単価</th>
-                          <th className="py-2 px-4 text-right">小計金額</th>
+                          <th className="py-2.5 px-4 min-w-[200px]">商品名（製剤英語表記 / 日本語名）</th>
+                          <th className="py-2.5 px-3 min-w-[120px]">SKU</th>
+                          <th className="py-2.5 px-3 text-right w-24">数量</th>
+                          <th className="py-2.5 px-3 text-right w-28">単価（価格）</th>
+                          <th className="py-2.5 px-4 text-right w-28">小計金額</th>
+                          <th className="py-2.5 px-3 text-center w-36">編集・操作</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/40">
-                        {alloc.items.map((it) => (
-                          <tr key={it.id} className="hover:bg-slate-800/20 text-slate-300">
-                            <td className="py-2.5 px-4">
-                              <div className="font-bold text-white flex items-center gap-1.5">
-                                <span>{it.nameEn}</span>
-                                {it.isProductDbMatched ? (
-                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 font-semibold border border-emerald-500/20">DB参照</span>
-                                ) : (
-                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 font-semibold border border-rose-500/30">DB未登録 (0円)</span>
-                                )}
-                              </div>
-                              <div className="text-[10px] text-slate-400">{it.nameJa}</div>
-                            </td>
-                            <td className="py-2.5 px-3 font-mono text-slate-400 text-[11px]">
-                              {it.sku}
-                            </td>
-                            <td className="py-2.5 px-3 text-right font-mono font-bold text-white text-xs">
-                              {it.qty} <span className="text-[10px] font-normal text-slate-400">{it.unit}</span>
-                            </td>
-                            <td className="py-2.5 px-3 text-right font-mono text-slate-300 text-xs">
-                              {currency === 'JPY' ? '¥' : '$'} {it.unitPrice.toLocaleString()}
-                            </td>
-                            <td className="py-2.5 px-4 text-right font-mono font-bold text-emerald-400 text-xs">
-                              {currency === 'JPY' ? '¥' : '$'} {it.amount.toLocaleString()}
-                            </td>
-                          </tr>
-                        ))}
+                        {alloc.items.map((it) => {
+                          const isInlineEditing = inlineEditingRowKey === `${alloc.id}_${it.id}`;
+
+                          if (isInlineEditing) {
+                            return (
+                              <tr key={it.id} className="bg-blue-950/30 border-y border-blue-500/30 text-slate-200">
+                                {/* 商品名 */}
+                                <td className="py-2 px-4">
+                                  <div className="space-y-1">
+                                    <input
+                                      type="text"
+                                      value={inlineDraft?.nameEn || ''}
+                                      onChange={e => setInlineDraft(prev => prev ? { ...prev, nameEn: e.target.value } : null)}
+                                      placeholder="英語商品名 (インボイス記載)"
+                                      className="w-full px-2 py-1 bg-slate-900 border border-blue-500/50 rounded text-xs text-white focus:outline-hidden focus:ring-1 focus:ring-blue-400"
+                                      title="商品名（英語表記）"
+                                    />
+                                    <input
+                                      type="text"
+                                      value={inlineDraft?.nameJa || ''}
+                                      onChange={e => setInlineDraft(prev => prev ? { ...prev, nameJa: e.target.value } : null)}
+                                      placeholder="日本語商品名"
+                                      className="w-full px-2 py-0.5 bg-slate-900 border border-slate-700 rounded text-[11px] text-slate-300 focus:outline-hidden focus:ring-1 focus:ring-blue-400"
+                                      title="商品名（日本語）"
+                                    />
+                                  </div>
+                                </td>
+                                {/* SKU */}
+                                <td className="py-2 px-3">
+                                  <input
+                                    type="text"
+                                    value={inlineDraft?.sku || ''}
+                                    onChange={e => setInlineDraft(prev => prev ? { ...prev, sku: e.target.value } : null)}
+                                    placeholder="SKU"
+                                    className="w-full px-2 py-1 bg-slate-900 border border-blue-500/50 rounded font-mono text-xs text-white focus:outline-hidden focus:ring-1 focus:ring-blue-400"
+                                    title="SKUコード"
+                                  />
+                                </td>
+                                {/* 数量 */}
+                                <td className="py-2 px-3 text-right">
+                                  <div className="flex items-center justify-end gap-1">
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      value={inlineDraft?.qty ?? 1}
+                                      onChange={e => setInlineDraft(prev => prev ? { ...prev, qty: Math.max(1, parseInt(e.target.value) || 1) } : null)}
+                                      className="w-16 px-2 py-1 bg-slate-900 border border-blue-500/50 rounded font-mono text-xs text-white text-right focus:outline-hidden focus:ring-1 focus:ring-blue-400 font-bold"
+                                    />
+                                    <span className="text-[10px] text-slate-400">{it.unit}</span>
+                                  </div>
+                                </td>
+                                {/* 単価（価格） */}
+                                <td className="py-2 px-3 text-right">
+                                  <div className="flex items-center justify-end gap-1">
+                                    <span className="text-slate-400 font-mono text-xs">{currency === 'JPY' ? '¥' : '$'}</span>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      value={inlineDraft?.unitPrice ?? 0}
+                                      onChange={e => setInlineDraft(prev => prev ? { ...prev, unitPrice: Math.max(0, parseInt(e.target.value) || 0) } : null)}
+                                      className="w-20 px-2 py-1 bg-slate-900 border border-blue-500/50 rounded font-mono text-xs text-white text-right focus:outline-hidden focus:ring-1 focus:ring-blue-400"
+                                    />
+                                  </div>
+                                </td>
+                                {/* 小計 */}
+                                <td className="py-2 px-4 text-right font-mono font-bold text-emerald-400 text-xs">
+                                  {currency === 'JPY' ? '¥' : '$'} {((inlineDraft?.qty || 0) * (inlineDraft?.unitPrice || 0)).toLocaleString()}
+                                </td>
+                                {/* 保存 / 取消 */}
+                                <td className="py-2 px-3 text-center">
+                                  <div className="flex items-center justify-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSaveInlineEdit(alloc.id, it.id)}
+                                      className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                                      title="変更を保存"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                      <span>保存</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={handleCancelInlineEdit}
+                                      className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs cursor-pointer transition-colors"
+                                      title="キャンセル"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          }
+
+                          return (
+                            <tr key={it.id} className="hover:bg-slate-800/20 text-slate-300 group">
+                              <td className="py-2.5 px-4">
+                                <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
+                                  <span>{it.nameEn}</span>
+                                  {it.isProductDbMatched ? (
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-400 font-semibold border border-emerald-500/20">DB参照</span>
+                                  ) : it.unitPrice > 0 ? (
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-500/15 text-blue-300 font-semibold border border-blue-500/20">手動設定済</span>
+                                  ) : (
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 font-semibold border border-rose-500/30">DB未登録 (0円)</span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-slate-400">{it.nameJa || it.productNameCsv}</div>
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-slate-300 text-[11px]">
+                                {it.sku}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono font-bold text-white text-xs">
+                                {it.qty} <span className="text-[10px] font-normal text-slate-400">{it.unit}</span>
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono text-slate-300 text-xs">
+                                <span className={it.unitPrice === 0 ? 'text-rose-400 font-bold' : ''}>
+                                  {currency === 'JPY' ? '¥' : '$'} {it.unitPrice.toLocaleString()}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-4 text-right font-mono font-bold text-emerald-400 text-xs">
+                                {currency === 'JPY' ? '¥' : '$'} {it.amount.toLocaleString()}
+                              </td>
+                              <td className="py-2.5 px-3 text-center">
+                                <div className="flex items-center justify-center gap-1">
+                                  {/* Edit button (opens modal with DB selector) */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenItemEditModal(alloc, it)}
+                                    className="px-2 py-1 rounded-md bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 hover:text-white border border-blue-500/30 text-[11px] font-semibold flex items-center gap-1 transition-all cursor-pointer shadow-xs"
+                                    title="SKU名・商品名・価格・数量を編集"
+                                  >
+                                    <Edit3 className="w-3 h-3" />
+                                    <span>編集</span>
+                                  </button>
+
+                                  {/* Inline Quick Edit Toggle */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartInlineEdit(alloc, it)}
+                                    className="p-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700/60 text-[11px] transition-colors cursor-pointer"
+                                    title="表内で直接入力・クイック編集"
+                                  >
+                                    <SlidersHorizontal className="w-3 h-3" />
+                                  </button>
+
+                                  {/* Delete Item (if items > 1) */}
+                                  {alloc.items.length > 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteItem(alloc.id, it.id)}
+                                      className="p-1 rounded-md bg-slate-800 hover:bg-rose-950/60 text-slate-500 hover:text-rose-400 border border-slate-700/60 hover:border-rose-500/40 text-[11px] transition-colors cursor-pointer"
+                                      title="この品目を削除"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -2076,6 +2533,209 @@ export default function CsvInvoiceImporter({
                 戻る（入力画面を再編集）
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Item Information Edit Modal (SKU名, 商品名, 価格, 数量) */}
+      {editingItemModal && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center justify-center">
+                  <Edit3 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>インボイス品目明細の編集</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-bold border border-blue-500/30 font-mono">
+                      {editingItemModal.invoiceNo}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {editingItemModal.clinicName} 宛ての品目情報（SKU・商品名・価格・数量）を直接編集します
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setEditingItemModal(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form onSubmit={handleSaveModalItem} className="p-5 space-y-4 max-h-[80vh] overflow-y-auto text-xs">
+              {/* Quick Preset: Select from Database Product Master */}
+              <div className="p-3 rounded-xl bg-blue-950/30 border border-blue-500/30 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-blue-300 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+                    <span>登録済み製剤マスタから引用して自動セット</span>
+                  </label>
+                  <span className="text-[10px] text-slate-400">マスタからSKU・名称・単価を反映</span>
+                </div>
+                <select
+                  onChange={(e) => {
+                    if (e.target.value) handleSelectMasterProduct(e.target.value);
+                  }}
+                  defaultValue=""
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">-- 製剤マスタを選択して自動入力 --</option>
+                  {products.map((p) => {
+                    const price = typeof p.invoicePrice === 'number' && !isNaN(p.invoicePrice) 
+                      ? p.invoicePrice 
+                      : (p.purchasePrice || 0);
+                    return (
+                      <option key={p.id} value={p.id}>
+                        {p.sku} | {p.nameEn} ({p.nameJa || '-'}) - {currency === 'JPY' ? '¥' : '$'}{price.toLocaleString()}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              {/* Field 1: SKU */}
+              <div className="space-y-1">
+                <label className="block text-slate-300 font-bold">
+                  SKU名 (SKU Code) <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editingItemModal.sku}
+                  onChange={(e) => setEditingItemModal(prev => prev ? { ...prev, sku: e.target.value } : null)}
+                  placeholder="例: JUV-01"
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white font-mono text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-[10px] text-slate-500">パッキングリストおよびインボイスの識別コードとして印字されます</p>
+              </div>
+
+              {/* Field 2: Product Name (English) */}
+              <div className="space-y-1">
+                <label className="block text-slate-300 font-bold">
+                  商品名（英語表記 / Commercial Invoice Description） <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editingItemModal.nameEn}
+                  onChange={(e) => setEditingItemModal(prev => prev ? { ...prev, nameEn: e.target.value } : null)}
+                  placeholder="例: Juvelook 2ml"
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium"
+                />
+                <p className="text-[10px] text-slate-500">商用インボイス（税関申告書類）に正式な品名として英語印字されます</p>
+              </div>
+
+              {/* Field 3: Product Name (Japanese) */}
+              <div className="space-y-1">
+                <label className="block text-slate-300 font-bold">
+                  商品名（日本語表記 / Japanese Description）
+                </label>
+                <input
+                  type="text"
+                  value={editingItemModal.nameJa}
+                  onChange={(e) => setEditingItemModal(prev => prev ? { ...prev, nameJa: e.target.value } : null)}
+                  placeholder="例: ジュベルック 2ml"
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-[10px] text-slate-500">国内スタッフ向けの確認・照合用表示です</p>
+              </div>
+
+              {/* Field 4 & 5: Price & Quantity */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* Unit Price */}
+                <div className="space-y-1 sm:col-span-1">
+                  <label className="block text-slate-300 font-bold">
+                    単価 / 価格 <span className="text-rose-400">*</span>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2 text-slate-400 font-mono">
+                      {currency === 'JPY' ? '¥' : '$'}
+                    </span>
+                    <input
+                      type="number"
+                      required
+                      min="0"
+                      step="1"
+                      value={editingItemModal.unitPrice}
+                      onChange={(e) => setEditingItemModal(prev => prev ? { ...prev, unitPrice: Math.max(0, parseInt(e.target.value) || 0) } : null)}
+                      className="w-full pl-7 pr-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white font-mono text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-bold"
+                    />
+                  </div>
+                </div>
+
+                {/* Quantity */}
+                <div className="space-y-1 sm:col-span-1">
+                  <label className="block text-slate-300 font-bold">
+                    数量 (Quantity) <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    step="1"
+                    value={editingItemModal.qty}
+                    onChange={(e) => setEditingItemModal(prev => prev ? { ...prev, qty: Math.max(1, parseInt(e.target.value) || 1) } : null)}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white font-mono text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-bold"
+                  />
+                </div>
+
+                {/* Unit */}
+                <div className="space-y-1 sm:col-span-1">
+                  <label className="block text-slate-300 font-bold">
+                    単位 (Unit)
+                  </label>
+                  <input
+                    type="text"
+                    value={editingItemModal.unit}
+                    onChange={(e) => setEditingItemModal(prev => prev ? { ...prev, unit: e.target.value } : null)}
+                    placeholder="vial / pcs / box"
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              {/* Subtotal Calculation Banner */}
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] text-slate-400 block font-medium">この品目の小計金額計算</span>
+                  <span className="text-xs font-mono text-slate-300">
+                    {currency === 'JPY' ? '¥' : '$'}{editingItemModal.unitPrice.toLocaleString()} × {editingItemModal.qty} {editingItemModal.unit}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] text-slate-400 block">小計金額</span>
+                  <span className="text-base font-black text-emerald-400 font-mono">
+                    {currency === 'JPY' ? '¥' : '$'}{(editingItemModal.unitPrice * editingItemModal.qty).toLocaleString()}
+                  </span>
+                </div>
+              </div>
+
+              {/* Modal Actions */}
+              <div className="pt-2 flex items-center justify-end gap-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEditingItemModal(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-600/30 flex items-center gap-1.5 transition-all cursor-pointer"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>変更を反映して保存</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
