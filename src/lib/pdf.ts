@@ -161,6 +161,8 @@ export function getEnglishClinicDetails(consignee: Partial<Clinic> = {}) {
     addressEn,
     doctorNameEn,
     contactPersonEn,
+    sequenceNo: (consignee as any).sequenceNo,
+    clinicId: consignee.clinicId || '',
     zip: consignee.zip || '',
     phone: consignee.phone || '',
     email: consignee.email || ''
@@ -337,15 +339,36 @@ function drawParties(doc: jsPDF, shipment: Shipment, startY: number): number {
   const clinicEn = getEnglishClinicDetails(consignee);
   let consigneeY = startY + 14;
 
-  // 1. Clinic Name in English (Format: "TO : CLINIC NAME")
+  // Extract sequence number (店舗番号, e.g. 1, 2, 3...)
+  let seqNo = clinicEn.sequenceNo ?? (consignee as any).sequenceNo;
+  if ((seqNo === undefined || seqNo === null || seqNo === '') && consignee.clinicId) {
+    const match = String(consignee.clinicId).match(/(\d+)/);
+    if (match) {
+      seqNo = parseInt(match[1], 10);
+    }
+  }
+
+  // 1. Store / Sequence Number ABOVE "TO :" (distinct line so it doesn't mix with clinic name)
+  if (seqNo !== undefined && seqNo !== null && String(seqNo).trim() !== '') {
+    setupFont(doc, 'bold');
+    doc.setTextColor(15, 23, 42); // Slate-900
+    doc.setFontSize(9);
+    doc.text(`No. ${seqNo}`, colRightX + 4, consigneeY);
+    consigneeY += 4.5;
+  }
+
+  // 2. Clinic Name in English (Format: "TO : CLINIC NAME")
   setupFont(doc, 'bold');
   doc.setTextColor(15, 23, 42); // Slate-900
   doc.setFontSize(9);
-  const rawClinicName = safeText(clinicEn.nameEn).trim();
-  const toClinicTitle = rawClinicName.toUpperCase().startsWith('TO :')
-    ? rawClinicName.toUpperCase()
-    : `TO : ${rawClinicName.toUpperCase()}`;
-  doc.text(toClinicTitle, colRightX + 4, consigneeY);
+  const rawClinicName = safeText(clinicEn.nameEn).replace(/^TO\s*:\s*/i, '').trim();
+  const toClinicTitle = `TO : ${rawClinicName.toUpperCase()}`;
+
+  const titleLines = doc.splitTextToSize(toClinicTitle, colWidth - 8);
+  titleLines.forEach((line: string) => {
+    doc.text(line, colRightX + 4, consigneeY);
+    consigneeY += 4.5;
+  });
   
   // 2. English Address
   setupFont(doc, 'normal');
@@ -541,8 +564,8 @@ export function generateInvoicePDF(shipment: Shipment, settings: SystemSettings)
   setupFont(doc, 'bold');
   doc.setFontSize(8);
   doc.setTextColor(255, 255, 255);
-  doc.text('No.', 18, currentY + 5.2);
-  doc.text('Description of Goods', 25, currentY + 5.2);
+  doc.text('SKU', 18, currentY + 5.2);
+  doc.text('Description of Goods', 46, currentY + 5.2);
   doc.text('Qty', 145, currentY + 5.2, { align: 'right' });
   doc.text('Unit Price', 168, currentY + 5.2, { align: 'right' });
   doc.text('Amount', 192, currentY + 5.2, { align: 'right' });
@@ -570,19 +593,21 @@ export function generateInvoicePDF(shipment: Shipment, settings: SystemSettings)
       doc.rect(15, currentY, 180, 10, 'F');
     }
 
-    // No.
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.setTextColor(148, 163, 184); // Slate-400
-    doc.text(String(index + 1), 18, currentY + 6.2);
+    // SKU (replaces No.)
+    doc.setFont('courier', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(71, 85, 105); // Slate-600
+    const cleanSku = safeText(item.sku || '-');
+    const truncatedSku = cleanSku.length > 15 ? cleanSku.substring(0, 14) + '…' : cleanSku;
+    doc.text(truncatedSku, 18, currentY + 6.2);
     
     // Product Name (English if available for export documents, fallback to Japanese)
     setupFont(doc, 'bold');
     doc.setFontSize(8);
     doc.setTextColor(15, 23, 42); // Slate-900
     const cleanName = safeText(item.nameEn || item.nameJa || 'Unknown Item');
-    const truncatedName = cleanName.length > 70 ? cleanName.substring(0, 67) + '...' : cleanName;
-    doc.text(truncatedName, 25, currentY + 6.2);
+    const truncatedName = cleanName.length > 58 ? cleanName.substring(0, 55) + '...' : cleanName;
+    doc.text(truncatedName, 46, currentY + 6.2);
     
     const symbol = getCurrencySymbol(shipment.currency);
 
@@ -716,8 +741,8 @@ export function generatePackingListPDF(shipment: Shipment, settings: SystemSetti
   setupFont(doc, 'bold');
   doc.setFontSize(8);
   doc.setTextColor(255, 255, 255);
-  doc.text('No.', 18, currentY + 5.2);
-  doc.text('Description of Goods', 25, currentY + 5.2);
+  doc.text('SKU', 18, currentY + 5.2);
+  doc.text('Description of Goods', 46, currentY + 5.2);
   doc.text('Qty', 115, currentY + 5.2, { align: 'right' });
   doc.text('No. of Boxes', 140, currentY + 5.2, { align: 'right' });
   doc.text('Net Weight', 166, currentY + 5.2, { align: 'right' });
@@ -748,19 +773,21 @@ export function generatePackingListPDF(shipment: Shipment, settings: SystemSetti
     const grossWeight = netWeight * 1.1; // Assumed 10% packing tare weight
     totalGrossWeight += grossWeight;
 
-    // No.
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.setTextColor(148, 163, 184); // Slate-400
-    doc.text(String(index + 1), 18, currentY + 6.2);
+    // SKU (replaces No.)
+    doc.setFont('courier', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(71, 85, 105); // Slate-600
+    const cleanSku = safeText(item.sku || '-');
+    const truncatedSku = cleanSku.length > 15 ? cleanSku.substring(0, 14) + '…' : cleanSku;
+    doc.text(truncatedSku, 18, currentY + 6.2);
     
     // Product Name (English if available for export documents, fallback to Japanese)
     setupFont(doc, 'bold');
     doc.setFontSize(8);
     doc.setTextColor(15, 23, 42); // Slate-900
     const cleanName = safeText(item.nameEn || item.nameJa || 'Unknown Item');
-    const truncatedName = cleanName.length > 55 ? cleanName.substring(0, 52) + '...' : cleanName;
-    doc.text(truncatedName, 25, currentY + 6.2);
+    const truncatedName = cleanName.length > 42 ? cleanName.substring(0, 39) + '...' : cleanName;
+    doc.text(truncatedName, 46, currentY + 6.2);
     
     // Qty
     doc.setFont('courier', 'bold');

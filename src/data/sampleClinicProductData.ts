@@ -681,7 +681,7 @@ export const SAMPLE_CLINICS_MASTER: Omit<Clinic, 'id' | 'createdAt'>[] = [
     notes: '中目黒・代官山',
     active: true
   }
-];
+].map((c, idx) => ({ ...c, sequenceNo: idx + 1 }));
 
 export const SAMPLE_PRODUCTS_MASTER: Omit<Product, 'id' | 'createdAt'>[] = [
   {

@@ -11,7 +11,8 @@ import {
   AlertTriangle,
   CheckCircle,
   FileSpreadsheet,
-  Loader2
+  Loader2,
+  Hash
 } from 'lucide-react';
 import { Clinic } from '../types';
 
@@ -22,6 +23,7 @@ interface ClinicMasterProps {
   onDeleteClinic: (id: string) => Promise<void>;
   onDeleteAllClinics?: () => Promise<void>;
   onImportClinics: (clinics: Omit<Clinic, 'id' | 'createdAt'>[], replaceAll?: boolean) => Promise<void>;
+  onRenumberClinics?: () => Promise<void>;
 }
 
 export default function ClinicMaster({ 
@@ -30,7 +32,8 @@ export default function ClinicMaster({
   onUpdateClinic, 
   onDeleteClinic,
   onDeleteAllClinics,
-  onImportClinics
+  onImportClinics,
+  onRenumberClinics
 }: ClinicMasterProps) {
   
   // States
@@ -43,6 +46,7 @@ export default function ClinicMaster({
   const [clinicToDelete, setClinicToDelete] = useState<Clinic | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isRenumbering, setIsRenumbering] = useState(false);
   const [notification, setNotification] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [replaceAllMode, setReplaceAllMode] = useState(false);
   const [csvPreview, setCsvPreview] = useState<any[]>([]);
@@ -50,6 +54,7 @@ export default function ClinicMaster({
 
   // Form Fields State
   const [formFields, setFormFields] = useState({
+    sequenceNo: 1,
     clinicId: '',
     name: '',
     nameEn: '',
@@ -71,7 +76,9 @@ export default function ClinicMaster({
   });
 
   const resetForm = () => {
+    const nextSeq = clinics.length > 0 ? Math.max(...clinics.map(c => c.sequenceNo || 0)) + 1 : 1;
     setFormFields({
+      sequenceNo: nextSeq,
       clinicId: '',
       name: '',
       nameEn: '',
@@ -96,16 +103,17 @@ export default function ClinicMaster({
 
   const handleOpenAdd = () => {
     resetForm();
-    // Auto-generate temporary sequential Clinic ID
-    const nextNum = clinics.length + 1;
-    const padded = String(nextNum).padStart(3, '0');
-    setFormFields(prev => ({ ...prev, clinicId: `CLN-${padded}` }));
+    const nextSeq = clinics.length > 0 ? Math.max(...clinics.map(c => c.sequenceNo || 0)) + 1 : 1;
+    const padded = String(nextSeq).padStart(3, '0');
+    setFormFields(prev => ({ ...prev, sequenceNo: nextSeq, clinicId: `CLN-${padded}` }));
     setIsFormOpen(true);
   };
 
   const handleOpenEdit = (clinic: Clinic) => {
     setEditingClinic(clinic);
+    const seqNum = clinic.sequenceNo ?? (clinics.indexOf(clinic) + 1);
     setFormFields({
+      sequenceNo: seqNum,
       clinicId: clinic.clinicId || '',
       name: clinic.name || '',
       nameEn: clinic.nameEn || '',
@@ -128,14 +136,31 @@ export default function ClinicMaster({
     setIsFormOpen(true);
   };
 
+  const handleRenumberAll = async () => {
+    if (!onRenumberClinics) return;
+    if (!window.confirm(`全${clinics.length}件のクリニックに上から順番に連番 (1〜${clinics.length}) を採番して保存しますか？`)) {
+      return;
+    }
+    setIsRenumbering(true);
+    try {
+      await onRenumberClinics();
+      showNotification(`全${clinics.length}件のクリニックに連番 (1〜${clinics.length}) を採番し保存しました。`, 'success');
+    } catch (e: any) {
+      console.error(e);
+      showNotification('連番の保存中にエラーが発生しました。', 'error');
+    } finally {
+      setIsRenumbering(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     // Auto-generate clinic ID if left blank
     let clinicId = formFields.clinicId.trim();
+    const seqNum = Number(formFields.sequenceNo) || (clinics.length + 1);
     if (!clinicId) {
-      const nextNum = clinics.length + 1;
-      clinicId = `CLN-${String(nextNum).padStart(3, '0')}`;
+      clinicId = `CLN-${String(seqNum).padStart(3, '0')}`;
     }
 
     // Check duplicate ID (if not editing and clinicId was manually given)
@@ -163,6 +188,7 @@ export default function ClinicMaster({
     const cleanDoctorNameEn = (formFields.doctorNameEn || '').replace(/^Dr\.?\s*/i, '').trim();
     const payload = {
       ...formFields,
+      sequenceNo: seqNum,
       doctorNameEn: cleanDoctorNameEn,
       clinicId,
       name,
@@ -394,6 +420,9 @@ export default function ClinicMaster({
 
   // Header column aliases mapping
   const headerAliasMap: Record<string, string> = {
+    // Sequence Number / 連番 (No.)
+    sequenceno: 'sequenceNo', '連番': 'sequenceNo', 'no': 'sequenceNo', 'no.': 'sequenceNo', '番号': 'sequenceNo',
+
     // Clinic ID (A列 / 1列目)
     clinicid: 'clinicId', 'クリニックid': 'clinicId', 'クリニックｉｄ': 'clinicId', 'クリニックコード': 'clinicId', id: 'clinicId', 'コード': 'clinicId', 'njbnid': 'clinicId',
     
@@ -582,6 +611,7 @@ export default function ClinicMaster({
           rowNum: actualCsvRowNum,
           isUpdate: !!existingMatch,
           matchedClinicId: existingMatch?.clinicId,
+          sequenceNo: rowObj['sequenceNo'] && !isNaN(parseInt(rowObj['sequenceNo'], 10)) ? parseInt(rowObj['sequenceNo'], 10) : undefined,
           clinicId,
           name, // exact CSV value, blank if blank
           nameEn, // exact CSV value, blank if blank (never filled with Japanese name)
@@ -658,7 +688,7 @@ export default function ClinicMaster({
   // CSV Export logic
   const handleExportCsv = () => {
     const headers = [
-      'clinicId', 'name', 'nameEn', 'corporationName', 'contactPerson', 
+      'sequenceNo', 'clinicId', 'name', 'nameEn', 'corporationName', 'contactPerson', 
       'doctorName', 'doctorNameEn',
       'zip', 'prefecture', 'city', 'address', 'building', 
       'addressEn', 'phone', 'email', 'notes', 'active'
@@ -666,7 +696,8 @@ export default function ClinicMaster({
 
     const csvContent = [
       headers.join(','),
-      ...clinics.map(c => [
+      ...clinics.map((c, idx) => [
+        c.sequenceNo ?? (idx + 1),
         `"${c.clinicId}"`,
         `"${c.name}"`,
         `"${c.nameEn}"`,
@@ -737,6 +768,19 @@ export default function ClinicMaster({
         </div>
         
         <div className="flex flex-wrap items-center gap-2">
+          {clinics.length > 0 && onRenumberClinics && (
+            <button
+              type="button"
+              onClick={handleRenumberAll}
+              disabled={isRenumbering}
+              className="bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-sm disabled:opacity-50 transition-colors"
+              title="登録順に連番 (1, 2, 3...) を自動採番して保存します"
+            >
+              <Hash className="w-4 h-4 text-indigo-500" />
+              <span>{isRenumbering ? '採番中...' : '連番一括採番'}</span>
+            </button>
+          )}
+
           {clinics.length > 0 && onDeleteAllClinics && (
             <button
               type="button"
@@ -804,7 +848,7 @@ export default function ClinicMaster({
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50/70 border-b border-slate-200/80 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                <th className="px-5 py-3 w-28">ID</th>
+                <th className="px-4 py-3 w-20 text-center">連番</th>
                 <th className="px-5 py-3">クリニック名</th>
                 <th className="px-5 py-3">英語表記 / 英語住所</th>
                 <th className="px-5 py-3">連絡先</th>
@@ -820,54 +864,66 @@ export default function ClinicMaster({
                   </td>
                 </tr>
               ) : (
-                filteredClinics.map((c) => (
-                  <tr key={c.id} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="px-5 py-4 font-bold font-mono text-slate-900">{c.clinicId}</td>
-                    <td className="px-5 py-4">
-                      <div className="font-bold text-slate-800">{c.name}</div>
-                      <div className="text-[10px] text-slate-400 mt-0.5">{c.corporationName || '法人名なし'}</div>
-                    </td>
-                    <td className="px-5 py-4 max-w-[300px]">
-                      <div className="font-semibold text-slate-600 truncate">{c.nameEn}</div>
-                      <div className="text-[10px] text-slate-400 truncate mt-0.5" title={c.addressEn}>{c.addressEn || '未登録'}</div>
-                    </td>
-                    <td className="px-5 py-4">
-                      <div className="text-slate-700">{c.phone || 'N/A'}</div>
-                      {c.contactPerson && <div className="text-[10px] text-slate-500 mt-0.5">担当: {c.contactPerson}</div>}
-                      {c.doctorName && <div className="text-[10px] text-blue-600 font-bold mt-0.5">医師: {c.doctorName}</div>}
-                    </td>
-                    <td className="px-5 py-4">
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                        c.active 
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
-                          : 'bg-slate-100 text-slate-500 border border-slate-200'
-                      }`}>
-                        {c.active ? '有効' : '無効'}
-                      </span>
-                    </td>
-                    <td className="px-5 py-4 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleOpenEdit(c)}
-                          className="bg-white hover:bg-slate-100 text-slate-600 p-1.5 rounded border border-slate-200 hover:border-slate-300 transition-colors cursor-pointer"
-                          title="編集"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenDelete(c)}
-                          className="bg-white hover:bg-red-50 text-red-600 p-1.5 rounded border border-slate-200 hover:border-red-200 transition-colors cursor-pointer hover:shadow-xs active:scale-95"
-                          title="削除"
-                          aria-label={`クリニック「${c.name || c.clinicId}」を削除`}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                filteredClinics.map((c) => {
+                  const seqNum = c.sequenceNo ?? (clinics.indexOf(c) + 1);
+                  return (
+                    <tr key={c.id} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-4 py-4 text-center">
+                        <span className="inline-flex items-center justify-center min-w-[36px] px-2.5 py-1 rounded-md bg-blue-50 font-black font-mono text-blue-700 text-xs border border-blue-200/90 shadow-2xs">
+                          {seqNum}
+                        </span>
+                        {c.clinicId && c.clinicId !== `CLN-${String(seqNum).padStart(3, '0')}` && (
+                          <div className="text-[10px] text-slate-400 font-mono mt-0.5" title="クリニックID">
+                            {c.clinicId}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="font-bold text-slate-800">{c.name}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">{c.corporationName || '法人名なし'}</div>
+                      </td>
+                      <td className="px-5 py-4 max-w-[300px]">
+                        <div className="font-semibold text-slate-600 truncate">{c.nameEn}</div>
+                        <div className="text-[10px] text-slate-400 truncate mt-0.5" title={c.addressEn}>{c.addressEn || '未登録'}</div>
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="text-slate-700">{c.phone || 'N/A'}</div>
+                        {c.contactPerson && <div className="text-[10px] text-slate-500 mt-0.5">担当: {c.contactPerson}</div>}
+                        {c.doctorName && <div className="text-[10px] text-blue-600 font-bold mt-0.5">医師: {c.doctorName}</div>}
+                      </td>
+                      <td className="px-5 py-4">
+                        <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          c.active 
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
+                            : 'bg-slate-100 text-slate-500 border border-slate-200'
+                        }`}>
+                          {c.active ? '有効' : '無効'}
+                        </span>
+                      </td>
+                      <td className="px-5 py-4 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEdit(c)}
+                            className="bg-white hover:bg-slate-100 text-slate-600 p-1.5 rounded border border-slate-200 hover:border-slate-300 transition-colors cursor-pointer"
+                            title="編集"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenDelete(c)}
+                            className="bg-white hover:bg-red-50 text-red-600 p-1.5 rounded border border-slate-200 hover:border-red-200 transition-colors cursor-pointer hover:shadow-xs active:scale-95"
+                            title="削除"
+                            aria-label={`クリニック「${c.name || c.clinicId}」を削除`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -890,6 +946,21 @@ export default function ClinicMaster({
             <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    連番 (No.) <span className="text-blue-600 font-bold">*</span> <span className="text-slate-400 font-normal">(マスタ・PDF表示用)</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={formFields.sequenceNo || ''}
+                    onChange={(e) => setFormFields(prev => ({ ...prev, sequenceNo: parseInt(e.target.value, 10) || 1 }))}
+                    className="w-full border border-slate-200 rounded px-3 py-1.5 text-xs font-mono font-bold focus:outline-none focus:border-blue-500"
+                    placeholder="1"
+                    required
+                  />
+                </div>
+
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
                     クリニックID <span className="text-slate-400 font-normal">(空欄で自動発行)</span>

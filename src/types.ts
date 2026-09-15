@@ -10,6 +10,7 @@ export interface User {
 export interface Clinic {
   id: string; // Firestore doc ID (or clinicId)
   clinicId: string; // Unique human ID
+  sequenceNo?: number; // 連番 (1, 2, 3...)
   name: string;
   nameEn: string;
   corporationName: string;

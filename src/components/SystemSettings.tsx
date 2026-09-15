@@ -590,11 +590,12 @@ function InvoiceLivePreview({
             </div>
 
             {/* Consignee */}
-            <div className="border border-slate-200 rounded p-4 text-[11px] space-y-2.5 leading-relaxed">
-              <div className="bg-slate-50 text-[10px] font-bold text-slate-600 px-2 py-0.5 rounded border border-slate-200 inline-block mb-1">
+            <div className="border border-slate-200 rounded p-4 text-[11px] space-y-2 leading-relaxed">
+              <div className="bg-slate-50 text-[10px] font-bold text-slate-600 px-2 py-0.5 rounded border border-slate-200 inline-block mb-0.5">
                 CONSIGNEE / IMPORTER
               </div>
-              <div className="font-bold text-slate-800 text-xs">Geunal Aesthetic Clinic</div>
+              <div className="font-bold text-slate-900 text-xs">No. 1</div>
+              <div className="font-bold text-slate-800 text-xs">TO : GEUNAL AESTHETIC CLINIC</div>
               <div>1-2-3 Jingumae, Shibuya-ku, Tokyo, Japan</div>
               <div><span className="text-slate-400">Country:</span> Japan</div>
               <div><span className="text-slate-400">Postal Code:</span> 150-0001</div>
@@ -621,7 +622,7 @@ function InvoiceLivePreview({
           <table className="w-full text-left text-[11px] border-collapse mb-6">
             <thead>
               <tr className="bg-slate-800 text-white font-bold">
-                <th className="py-2.5 px-2 pl-3 rounded-l">No.</th>
+                <th className="py-2.5 px-2 pl-3 rounded-l">SKU</th>
                 <th className="py-2.5 px-2">Description of Goods</th>
                 <th className="py-2.5 px-2 text-right">Qty</th>
                 <th className="py-2.5 px-2 text-right">Unit Price</th>
@@ -631,7 +632,7 @@ function InvoiceLivePreview({
             <tbody>
               {sampleItems.map((item, idx) => (
                 <tr key={idx} className={`${idx % 2 === 1 ? 'bg-slate-50/60' : ''} border-b border-slate-100 hover:bg-slate-50/40 transition-colors`}>
-                  <td className="py-3 px-2 pl-3 text-slate-400 font-mono">{idx + 1}</td>
+                  <td className="py-3 px-2 pl-3 text-slate-700 font-mono font-bold text-[10px]">{item.sku}</td>
                   <td className="py-3 px-2 font-semibold text-slate-800 leading-relaxed">{item.nameEn}</td>
                   <td className="py-3 px-2 text-right font-mono font-bold text-slate-600">{item.qty}</td>
                   <td className="py-3 px-2 text-right font-mono">{currencySymbol} {formatValue(item.price)}</td>

@@ -97,7 +97,12 @@ export default function App() {
     const unsubClinics = onSnapshot(collection(db, 'clinics'), (snap) => {
       const list: Clinic[] = [];
       snap.forEach(doc => list.push({ id: doc.id, ...doc.data() } as Clinic));
-      setClinics(list.sort((a, b) => (a.name || '').localeCompare(b.name || '')));
+      setClinics(list.sort((a, b) => {
+        const seqA = a.sequenceNo !== undefined && a.sequenceNo !== null ? a.sequenceNo : 999999;
+        const seqB = b.sequenceNo !== undefined && b.sequenceNo !== null ? b.sequenceNo : 999999;
+        if (seqA !== seqB) return seqA - seqB;
+        return (a.name || '').localeCompare(b.name || '');
+      }));
     });
 
     const unsubWarehouses = onSnapshot(collection(db, 'warehouses'), (snap) => {
@@ -183,6 +188,24 @@ export default function App() {
     runMigration().catch(err => console.error('Migration error:', err));
   }, [isInitializing, warehouses, hasMigrated, settings.defaultWarehouseId]);
 
+  // Auto-migration/sync to ensure all clinics in Firestore have sequence numbers (1, 2, 3...)
+  const [hasRenumberedClinics, setHasRenumberedClinics] = useState(false);
+  useEffect(() => {
+    if (isInitializing || clinics.length === 0 || hasRenumberedClinics) return;
+    const needsNumbering = clinics.some(c => c.sequenceNo === undefined || c.sequenceNo === null);
+    if (needsNumbering) {
+      setHasRenumberedClinics(true);
+      const batch = writeBatch(db);
+      clinics.forEach((c, idx) => {
+        if (c.sequenceNo === undefined || c.sequenceNo === null) {
+          const cRef = doc(db, 'clinics', c.id);
+          batch.update(cRef, { sequenceNo: idx + 1 });
+        }
+      });
+      batch.commit().catch(err => console.warn('Auto clinic sequence numbering error:', err));
+    }
+  }, [isInitializing, clinics, hasRenumberedClinics]);
+
   // Quick seed database if completely empty
   const handleSeedDatabase = async () => {
     setIsInitializing(true);
@@ -207,9 +230,9 @@ export default function App() {
       const c1Ref = doc(collection(db, 'clinics'));
       const c2Ref = doc(collection(db, 'clinics'));
       const c3Ref = doc(collection(db, 'clinics'));
-      batch.set(c1Ref, { clinicId: 'SBC-TYO', name: '品川美容外科 東京本院', nameEn: 'Shinagawa Beauty Clinic Tokyo', contactPerson: '田中 太郎', contactPersonEn: 'Taro Tanaka', doctorName: '佐藤 茂', doctorNameEn: 'Dr. Shigeru Sato', zip: '108-0075', prefecture: '東京都', city: '港区', address: '港南2丁目15番2号 品川インターシティB棟', addressEn: 'B-Block, Shinagawa Intercity, 2-15-2 Konan, Minato-ku, Tokyo, Japan', phone: '03-1234-5678', email: 'tyo-h@shinagawa.co.jp', active: true, notes: '東京本社' });
-      batch.set(c2Ref, { clinicId: 'SBC-SJK', name: '湘南美容クリニック 新宿本院', nameEn: 'Shonan Beauty Clinic Shinjuku', contactPerson: '佐藤 恵', contactPersonEn: 'Megumi Sato', doctorName: '相川 佳之', doctorNameEn: 'Dr. Yoshiyuki Aikawa', zip: '163-1324', prefecture: '東京都', city: '新宿区', address: '西新宿6-5-1 新宿アイランドタワー24F', addressEn: '24F Shinjuku Island Tower, 6-5-1 Nishi-Shinjuku, Shinjuku-ku, Tokyo, Japan', phone: '03-8765-4321', email: 'shinjuku@sbc.co.jp', active: true, notes: '新宿本店' });
-      batch.set(c3Ref, { clinicId: 'GNL-OSK', name: 'グナル美容外科 大阪梅田院', nameEn: 'Gunal Clinic Osaka Umeda', contactPerson: '鈴木 一郎', contactPersonEn: 'Ichiro Suzuki', doctorName: 'グナル チョル', doctorNameEn: 'Dr. Chul Gunal', zip: '530-0001', prefecture: '大阪府', city: '大阪市北区', address: '梅田1丁目2番3号', addressEn: '1-2-3 Umeda, Kita-ku, Osaka, Japan', phone: '06-4444-5555', email: 'umeda@gunal-clinic.jp', active: true, notes: '大阪梅田院' });
+      batch.set(c1Ref, { sequenceNo: 1, clinicId: 'SBC-TYO', name: '品川美容外科 東京本院', nameEn: 'Shinagawa Beauty Clinic Tokyo', contactPerson: '田中 太郎', contactPersonEn: 'Taro Tanaka', doctorName: '佐藤 茂', doctorNameEn: 'Dr. Shigeru Sato', zip: '108-0075', prefecture: '東京都', city: '港区', address: '港南2丁目15番2号 品川インターシティB棟', addressEn: 'B-Block, Shinagawa Intercity, 2-15-2 Konan, Minato-ku, Tokyo, Japan', phone: '03-1234-5678', email: 'tyo-h@shinagawa.co.jp', active: true, notes: '東京本社' });
+      batch.set(c2Ref, { sequenceNo: 2, clinicId: 'SBC-SJK', name: '湘南美容クリニック 新宿本院', nameEn: 'Shonan Beauty Clinic Shinjuku', contactPerson: '佐藤 恵', contactPersonEn: 'Megumi Sato', doctorName: '相川 佳之', doctorNameEn: 'Dr. Yoshiyuki Aikawa', zip: '163-1324', prefecture: '東京都', city: '新宿区', address: '西新宿6-5-1 新宿アイランドタワー24F', addressEn: '24F Shinjuku Island Tower, 6-5-1 Nishi-Shinjuku, Shinjuku-ku, Tokyo, Japan', phone: '03-8765-4321', email: 'shinjuku@sbc.co.jp', active: true, notes: '新宿本店' });
+      batch.set(c3Ref, { sequenceNo: 3, clinicId: 'GNL-OSK', name: 'グナル美容外科 大阪梅田院', nameEn: 'Gunal Clinic Osaka Umeda', contactPerson: '鈴木 一郎', contactPersonEn: 'Ichiro Suzuki', doctorName: 'グナル チョル', doctorNameEn: 'Dr. Chul Gunal', zip: '530-0001', prefecture: '大阪府', city: '大阪市北区', address: '梅田1丁目2番3号', addressEn: '1-2-3 Umeda, Kita-ku, Osaka, Japan', phone: '06-4444-5555', email: 'umeda@gunal-clinic.jp', active: true, notes: '大阪梅田院' });
 
       // Seed initial lots for FEFO testing (now placed in w2Ref/IC-IFZL as the default)
       const lot1Ref = doc(collection(db, 'inventoryLots'));
@@ -610,11 +633,35 @@ export default function App() {
 
   // Clinic Master CRUD functions
   const handleAddClinic = async (clinic: Omit<Clinic, 'id' | 'createdAt'>) => {
+    const maxSeq = clinics.reduce((max, c) => Math.max(max, c.sequenceNo || 0), 0);
+    const nextSeq = clinic.sequenceNo ?? (maxSeq + 1);
     await addDoc(collection(db, 'clinics'), {
       ...clinic,
+      sequenceNo: nextSeq,
       createdAt: new Date().toISOString()
     });
-    await logAuditAction('CLINIC_ADD', clinic.name, 'None', JSON.stringify(clinic));
+    await logAuditAction('CLINIC_ADD', clinic.name, 'None', JSON.stringify({ ...clinic, sequenceNo: nextSeq }));
+  };
+
+  const handleRenumberClinics = async () => {
+    const sorted = [...clinics].sort((a, b) => {
+      const seqA = a.sequenceNo !== undefined && a.sequenceNo !== null ? a.sequenceNo : 999999;
+      const seqB = b.sequenceNo !== undefined && b.sequenceNo !== null ? b.sequenceNo : 999999;
+      if (seqA !== seqB) return seqA - seqB;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+
+    const chunkSize = 400;
+    for (let i = 0; i < sorted.length; i += chunkSize) {
+      const chunk = sorted.slice(i, i + chunkSize);
+      const batch = writeBatch(db);
+      chunk.forEach((c, idxInChunk) => {
+        const ref = doc(db, 'clinics', c.id);
+        batch.update(ref, { sequenceNo: i + idxInChunk + 1 });
+      });
+      await batch.commit();
+    }
+    await logAuditAction('CLINIC_RENUMBER', 'Clinics', 'None', `全${sorted.length}件のクリニックに連番(1〜${sorted.length})を採番保存しました`);
   };
 
   const handleUpdateClinic = async (id: string, updated: Partial<Clinic>) => {
@@ -683,10 +730,11 @@ export default function App() {
       for (let i = 0; i < newClinics.length; i += chunkSize) {
         const chunk = newClinics.slice(i, i + chunkSize);
         const batch = writeBatch(db);
-        chunk.forEach(c => {
+        chunk.forEach((c, idxInChunk) => {
           const ref = doc(collection(db, 'clinics'));
           batch.set(ref, {
             ...sanitizeForFirestore(c),
+            sequenceNo: c.sequenceNo ?? (i + idxInChunk + 1),
             createdAt: new Date().toISOString()
           });
         });
@@ -705,6 +753,7 @@ export default function App() {
     // Default: Safe Upsert (Update existing clinics by matching ID or name, otherwise add new)
     const existingById = new Map<string, Clinic>();
     const existingByName = new Map<string, Clinic>();
+    const currentMaxSeq = existingClinics.reduce((max, c) => Math.max(max, (c as any).sequenceNo || 0), 0);
 
     existingClinics.forEach(c => {
       const idRaw = (c.clinicId || '').trim().toUpperCase();
@@ -743,9 +792,11 @@ export default function App() {
         updatedCount++;
       } else {
         const docRef = doc(collection(db, 'clinics'));
+        const nextSeq = c.sequenceNo ?? (currentMaxSeq + addedCount + 1);
         writeOperations.push(batch => {
           batch.set(docRef, {
             ...cleanRecord,
+            sequenceNo: nextSeq,
             createdAt: new Date().toISOString()
           });
         });
@@ -1522,6 +1573,7 @@ export default function App() {
               onDeleteClinic={handleDeleteClinic}
               onDeleteAllClinics={handleDeleteAllClinics}
               onImportClinics={handleImportClinics}
+              onRenumberClinics={handleRenumberClinics}
             />
           )}
 
