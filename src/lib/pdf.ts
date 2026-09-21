@@ -72,6 +72,19 @@ function setupFont(doc: jsPDF, fontStyle: 'normal' | 'bold' = 'normal') {
 }
 
 /**
+ * Safely sets the font, choosing JapaneseFont if the string contains non-ASCII characters,
+ * or the requested ASCII font (courier/helvetica) otherwise.
+ * This prevents WinAnsi mojibake when non-ASCII text is rendered with standard PDF 14 fonts.
+ */
+function setSafeFont(doc: jsPDF, targetAsciiFont: 'courier' | 'helvetica', style: 'normal' | 'bold', textToRender?: string | null) {
+  if (textToRender && /[^\x00-\x7F]/.test(textToRender)) {
+    setupFont(doc, style);
+  } else {
+    doc.setFont(targetAsciiFont, style);
+  }
+}
+
+/**
  * Safe text wrapper to prevent jsPDF from crashing/corrupting Japanese/CJK characters 
  * when standard fonts (Helvetica) are used (which only support WinAnsiEncoding).
  */
@@ -253,7 +266,7 @@ function drawHeader(doc: jsPDF, title: string, shipment: Shipment, startY: numbe
     doc.setTextColor(100, 116, 139); // Slate-500
     doc.text(`${label}:`, metaX - 35, currY, { align: 'right' });
     
-    doc.setFont('courier', 'bold');
+    setSafeFont(doc, 'courier', 'bold', value);
     doc.setFontSize(8.5);
     doc.setTextColor(71, 85, 105); // Slate-600
     doc.text(safeText(value), metaX, currY, { align: 'right' });
@@ -594,10 +607,10 @@ export function generateInvoicePDF(shipment: Shipment, settings: SystemSettings)
     }
 
     // SKU (replaces No.)
-    doc.setFont('courier', 'bold');
+    const cleanSku = safeText(item.sku || '-');
+    setSafeFont(doc, 'courier', 'bold', cleanSku);
     doc.setFontSize(7.5);
     doc.setTextColor(71, 85, 105); // Slate-600
-    const cleanSku = safeText(item.sku || '-');
     const truncatedSku = cleanSku.length > 15 ? cleanSku.substring(0, 14) + '…' : cleanSku;
     doc.text(truncatedSku, 18, currentY + 6.2);
     
@@ -774,10 +787,10 @@ export function generatePackingListPDF(shipment: Shipment, settings: SystemSetti
     totalGrossWeight += grossWeight;
 
     // SKU (replaces No.)
-    doc.setFont('courier', 'bold');
+    const cleanSku = safeText(item.sku || '-');
+    setSafeFont(doc, 'courier', 'bold', cleanSku);
     doc.setFontSize(7.5);
     doc.setTextColor(71, 85, 105); // Slate-600
-    const cleanSku = safeText(item.sku || '-');
     const truncatedSku = cleanSku.length > 15 ? cleanSku.substring(0, 14) + '…' : cleanSku;
     doc.text(truncatedSku, 18, currentY + 6.2);
     

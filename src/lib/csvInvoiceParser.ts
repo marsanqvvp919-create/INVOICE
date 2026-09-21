@@ -1,6 +1,6 @@
 import { Clinic, Product, Shipment, ShipmentItem, Warehouse, SystemSettings } from '../types';
 import { SAMPLE_CLINICS_MASTER } from '../data/sampleClinicProductData';
-import { resolveBatchInvoiceNumbers, formatStandardInvoiceNo } from './invoiceSequence';
+import { resolveBatchInvoiceNumbers, formatStandardInvoiceNo, isValidInvoiceNumberString } from './invoiceSequence';
 
 export interface ParsedCsvRow {
   rawRowIndex: number;
@@ -396,10 +396,10 @@ export function parseShippingCsv(
     };
   }
 
-  // Column detection
+  // Column detection (-1 indicates column not explicitly identified)
   let clinicCol = 0;
   let recipientCol = 1;
-  let invoiceCol = 2;
+  let invoiceCol = -1;
   let productCol = 3;
   let qtyCol = 4;
   let trackingCol = -1;
@@ -471,11 +471,13 @@ export function parseShippingCsv(
       const clinicObj = matched.clinic;
       const clinicValidation = validateClinicInvoiceCompleteness(clinicObj);
 
-      // Rule: If CSV contains an invoice number, reflect it directly!
-      // Otherwise, fallback to system-generated format.
+      // Rule: If CSV contains a genuine alphanumeric invoice number, reflect it!
+      // If it contains Japanese characters or invalid format, reject it and generate standard sequential number.
       const paddedNum = String(clinicCounter).padStart(3, '0');
       const defaultGeneratedInvoiceNo = `${basePrefix}${dateStr}-${paddedNum}`;
-      const hasCsvInvoiceNo = Boolean(colCVal && colCVal.trim() !== '');
+      
+      const isColValidInvoiceNo = Boolean(invoiceCol >= 0 && colCVal && isValidInvoiceNumberString(colCVal));
+      const hasCsvInvoiceNo = isColValidInvoiceNo;
       const effectiveInvoiceNo = hasCsvInvoiceNo ? colCVal.trim() : defaultGeneratedInvoiceNo;
 
       // Rule: Recipient is pulled strictly from DB (CSV Column B is ignored, strictly WITHOUT "Dr." prefix)
@@ -493,7 +495,7 @@ export function parseShippingCsv(
         doctorNameJaFromDb: docJa,
         csvIgnoredRecipient: colBVal,
         systemGeneratedInvoiceNo: effectiveInvoiceNo,
-        csvIgnoredInvoiceNo: colCVal,
+        csvIgnoredInvoiceNo: isColValidInvoiceNo ? colCVal : '',
         isInvoiceNoFromCsv: hasCsvInvoiceNo,
         trackingNo: colTrackingVal,
         clinicValidation,
@@ -504,6 +506,11 @@ export function parseShippingCsv(
         isValid: true,
         warnings: []
       };
+
+      // If the CSV column contained text but it wasn't a valid invoice number (e.g. Japanese text/clinic memo):
+      if (invoiceCol >= 0 && colCVal && !isColValidInvoiceNo) {
+        currentAlloc.warnings.push(`CSVインボイス番号列「${colCVal}」に無効文字（日本語等）が含まれるため、国際仕様の通番連番（${defaultGeneratedInvoiceNo}）を割り当てました。`);
+      }
 
       if (matched.source === 'UNMATCHED') {
         currentAlloc.warnings.push(`クリニック「${colAVal}」がデータベースに未登録です。`);
@@ -518,8 +525,8 @@ export function parseShippingCsv(
       allocations.push(currentAlloc);
     } else if (currentAlloc) {
       // Continuation row for the same clinic:
-      // If previous row had no invoice number and this row does, capture it!
-      if (!currentAlloc.isInvoiceNoFromCsv && colCVal) {
+      // If previous row had no invoice number and this row does (and it's valid alphanumeric):
+      if (!currentAlloc.isInvoiceNoFromCsv && colCVal && isValidInvoiceNumberString(colCVal)) {
         currentAlloc.systemGeneratedInvoiceNo = colCVal;
         currentAlloc.csvIgnoredInvoiceNo = colCVal;
         currentAlloc.isInvoiceNoFromCsv = true;
@@ -598,8 +605,8 @@ export function parseShippingCsv(
   const resolvedMap = resolveBatchInvoiceNumbers(
     allocations.map(a => ({
       id: a.id,
-      csvInvoiceNo: a.csvIgnoredInvoiceNo || (a.isInvoiceNoFromCsv ? a.systemGeneratedInvoiceNo : undefined),
-      existingInvoiceNo: a.systemGeneratedInvoiceNo
+      csvInvoiceNo: (a.isInvoiceNoFromCsv && isValidInvoiceNumberString(a.csvIgnoredInvoiceNo)) ? a.csvIgnoredInvoiceNo : undefined,
+      existingInvoiceNo: isValidInvoiceNumberString(a.systemGeneratedInvoiceNo) ? a.systemGeneratedInvoiceNo : undefined
     })),
     effectiveDate,
     existingShipments || [],
@@ -659,8 +666,8 @@ export function resequenceAllocationsForDate(
   const resolvedMap = resolveBatchInvoiceNumbers(
     allocations.map(a => ({
       id: a.id,
-      csvInvoiceNo: a.csvIgnoredInvoiceNo || (a.isInvoiceNoFromCsv && !a.isCollisionAvoided ? a.systemGeneratedInvoiceNo : undefined),
-      existingInvoiceNo: a.systemGeneratedInvoiceNo
+      csvInvoiceNo: (a.isInvoiceNoFromCsv && !a.isCollisionAvoided && isValidInvoiceNumberString(a.csvIgnoredInvoiceNo)) ? a.csvIgnoredInvoiceNo : undefined,
+      existingInvoiceNo: isValidInvoiceNumberString(a.systemGeneratedInvoiceNo) ? a.systemGeneratedInvoiceNo : undefined
     })),
     targetShippingDate,
     existingShipments,

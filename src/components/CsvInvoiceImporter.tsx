@@ -365,6 +365,38 @@ export default function CsvInvoiceImporter({
     }
   };
 
+  // Force re-numbering all parsed allocations with clean sequential numbers (INV-YYYYMMDD-001〜)
+  const handleForceSequentialRenumbering = () => {
+    if (!parseResult || parseResult.allocations.length === 0) {
+      showToast('再採番する対象データがありません。', 'error');
+      return;
+    }
+    
+    // Clear CSV flags and force standard sequential numbering
+    const strippedAllocations = parseResult.allocations.map(a => ({
+      ...a,
+      isInvoiceNoFromCsv: false,
+      csvIgnoredInvoiceNo: '',
+      isCollisionAvoided: false
+    }));
+
+    const resequenced = resequenceAllocationsForDate(
+      strippedAllocations,
+      shippingDate,
+      shipments,
+      settings
+    );
+
+    setParseResult({
+      ...parseResult,
+      allocations: resequenced
+    });
+
+    const prefix = settings?.prefix || 'INV-';
+    const datePart = shippingDate.replace(/-/g, '');
+    showToast(`全${resequenced.length}件のインボイス番号を本日の自動連番（${prefix}${datePart}-001〜）で統一再採番しました。`, 'success');
+  };
+
   // Execute parsing when csvText or options change
   const handleParseCsv = (textToParse: string = csvText, targetDate: string = shippingDate) => {
     if (!textToParse || !textToParse.trim()) {
@@ -1862,6 +1894,17 @@ export default function CsvInvoiceImporter({
 
             {/* Primary Action Buttons */}
             <div className="flex flex-wrap items-center gap-2.5">
+              {/* Force clean sequential re-numbering button */}
+              <button
+                type="button"
+                onClick={handleForceSequentialRenumbering}
+                className="px-3.5 py-2.5 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 flex items-center gap-2 cursor-pointer transition-all shadow-sm"
+                title="CSVの不規則な番号や日本語表記を解除し、本日通番（INV-YYYYMMDD-001〜）で全件統一再採番します"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <span>本日連番で全件再採番</span>
+              </button>
+
               {/* Commit current batch to daily cache button */}
               <button
                 type="button"

@@ -2,6 +2,34 @@ import { Shipment, SystemSettings } from '../types';
 import { getMaxSequenceFromCache, getUsedInvoiceNumbersFromCache } from './dailyInvoiceCache';
 
 /**
+ * Validates whether a candidate string is a legitimate invoice number for international commercial use.
+ * Rejects strings containing Japanese/CJK characters, invalid symbols, or lacking alphanumeric characters.
+ */
+export function isValidInvoiceNumberString(val: string | undefined | null): boolean {
+  if (!val || typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  if (trimmed.length < 2 || trimmed.length > 50) return false;
+
+  // Reject Japanese / CJK / multi-byte characters
+  if (/[\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFFEF\u4E00-\u9FAF]/.test(trimmed)) {
+    return false;
+  }
+
+  // Reject any characters outside printable ASCII 0x21-0x7E
+  if (/[^\x21-\x7E]/.test(trimmed)) {
+    return false;
+  }
+
+  // Must match valid invoice code format: alphanumeric starting/ending with allowable delimiters
+  if (!/^[A-Za-z0-9][A-Za-z0-9\-_#/.]*$/.test(trimmed)) {
+    return false;
+  }
+
+  // Must contain at least one digit or alphanumeric character
+  return /[A-Za-z0-9]/.test(trimmed);
+}
+
+/**
  * Extracts date information and sequence number from an invoice number string.
  * Examples:
  * - "INV-20260920-005" -> sequence: 5, dateDigits: "20260920", prefix: "INV-"
@@ -17,6 +45,11 @@ export function parseInvoiceNo(invoiceNo: string): {
   if (!invoiceNo || typeof invoiceNo !== 'string') return null;
   const trimmed = invoiceNo.trim();
 
+  // Reject Japanese or CJK text immediately
+  if (/[\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFFEF\u4E00-\u9FAF]/.test(trimmed)) {
+    return null;
+  }
+
   // Pattern 1: Prefix (optional) + Date (6 or 8 digits) + Separator (-) + Sequence
   const matchWithDate = trimmed.match(/^(.*?)(?:(?:\b|(?<=\D))(\d{6}|\d{8}))[-_/](\d+)$/);
   if (matchWithDate) {
@@ -28,7 +61,8 @@ export function parseInvoiceNo(invoiceNo: string): {
   }
 
   // Pattern 2: Ends with separator and digits (e.g. "INV-005" or "CUSTOM-12")
-  const matchSuffix = trimmed.match(/[-_/](\d+)$/);
+  // Only accept if string contains alphanumeric characters before separator
+  const matchSuffix = trimmed.match(/^[A-Za-z0-9\-_#/.]*?[-_/](\d+)$/);
   if (matchSuffix) {
     return {
       sequence: parseInt(matchSuffix[1], 10)
@@ -135,14 +169,18 @@ export function resolveBatchInvoiceNumbers(
   // Set of all already-used invoice numbers in the database and cache (normalized lowercase)
   const usedInvoiceNumbers = new Set<string>();
   existingShipments.forEach(s => {
-    if (s.invoiceNo) {
+    if (s.invoiceNo && isValidInvoiceNumberString(s.invoiceNo)) {
       usedInvoiceNumbers.add(s.invoiceNo.trim().toLowerCase());
     }
   });
 
   if (includeCache) {
     const cacheUsed = getUsedInvoiceNumbersFromCache(targetDateStr);
-    cacheUsed.forEach(no => usedInvoiceNumbers.add(no));
+    cacheUsed.forEach(no => {
+      if (isValidInvoiceNumberString(no)) {
+        usedInvoiceNumbers.add(no.trim().toLowerCase());
+      }
+    });
   }
 
   // Calculate the starting sequence number for this date from existing database records + cache
@@ -153,20 +191,21 @@ export function resolveBatchInvoiceNumbers(
   for (const item of items) {
     const rawCandidate = (item.csvInvoiceNo || item.existingInvoiceNo || '').trim();
     const candidateLower = rawCandidate.toLowerCase();
+    const isValidFormat = isValidInvoiceNumberString(rawCandidate);
 
     // Check if the candidate number is a collision with existing shipments or already assigned in this batch
-    const isAlreadyUsed = rawCandidate !== '' && usedInvoiceNumbers.has(candidateLower);
+    const isAlreadyUsed = isValidFormat && usedInvoiceNumbers.has(candidateLower);
 
-    // If no candidate provided, or candidate collides with an existing shipment on the same day:
-    if (!rawCandidate || isAlreadyUsed) {
+    // If no candidate provided, invalid format (e.g. Japanese text/clinic name), or collides:
+    if (!rawCandidate || !isValidFormat || isAlreadyUsed) {
       const generatedNo = formatStandardInvoiceNo(prefix, targetDateStr, nextSeq);
       usedInvoiceNumbers.add(generatedNo.toLowerCase());
       
       results.set(item.id, {
         invoiceNo: generatedNo,
-        isFromCsv: Boolean(rawCandidate && !isAlreadyUsed),
+        isFromCsv: false,
         isAutoSequential: true,
-        isCollisionAvoided: Boolean(rawCandidate && isAlreadyUsed),
+        isCollisionAvoided: Boolean(rawCandidate && isValidFormat && isAlreadyUsed),
         sequenceNumber: nextSeq
       });
 

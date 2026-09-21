@@ -109,6 +109,7 @@ export default function ShipmentHistory({
   });
 
   // Edit fields
+  const [editInvoiceNo, setEditInvoiceNo] = useState('');
   const [editTrackingNo, setEditTrackingNo] = useState('');
   const [editShippingCost, setEditShippingCost] = useState(0);
   const [editNotes, setEditNotes] = useState('');
@@ -501,6 +502,7 @@ export default function ShipmentHistory({
 
   const handleOpenEdit = (s: Shipment) => {
     setIsEditing(s);
+    setEditInvoiceNo(s.invoiceNo || '');
     setEditTrackingNo(s.trackingNo || '');
     setEditShippingCost(s.shippingCost || 0);
     setEditNotes(s.notes || '');
@@ -514,6 +516,7 @@ export default function ShipmentHistory({
       const totalInvoiceAmount = totalItemsAmount + editShippingCost + isEditing.insurance + isEditing.otherCharges;
 
       await onEditShipment(isEditing.id, {
+        invoiceNo: editInvoiceNo.trim() || isEditing.invoiceNo,
         trackingNo: editTrackingNo,
         shippingCost: editShippingCost,
         notes: editNotes,
@@ -526,7 +529,7 @@ export default function ShipmentHistory({
         isOpen: true,
         type: 'success',
         title: '更新完了',
-        message: '発送追跡情報および送料・備考を更新しました。監査ログに保存されました。'
+        message: 'インボイス番号、発送追跡情報および送料・備考を更新しました。監査ログに保存されました。'
       });
     } catch (err: any) {
       console.error(err);
@@ -978,6 +981,18 @@ export default function ShipmentHistory({
             </div>
             
             <div className="p-6 space-y-4 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">インボイス番号 (Invoice No)</label>
+                <input
+                  type="text"
+                  value={editInvoiceNo}
+                  onChange={(e) => setEditInvoiceNo(e.target.value)}
+                  className="w-full border border-slate-200 rounded px-3 py-1.5 font-mono font-bold text-slate-800"
+                  placeholder="例: INV-20260921-001"
+                />
+                <span className="text-[10px] text-slate-400 mt-0.5 block">英数字・ハイフン推奨（PDF帳票のヘッダーおよび通番管理に反映されます）</span>
+              </div>
+
               <div>
                 <label className="block font-bold text-slate-700 mb-1">追跡番号 (Tracking Number)</label>
                 <input
