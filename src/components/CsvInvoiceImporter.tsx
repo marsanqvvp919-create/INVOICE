@@ -347,6 +347,27 @@ export default function CsvInvoiceImporter({
     handleParseCsv(DEFAULT_SAMPLE_CSV);
   };
 
+  // Download sample CSV as file
+  const handleDownloadSampleCsv = () => {
+    try {
+      // Prepend UTF-8 BOM so Excel opens Japanese characters without garbling
+      const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+      const blob = new Blob([bom, DEFAULT_SAMPLE_CSV], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = '出荷資料_サンプル_フォーマット.csv';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      showToast('サンプルCSVファイルをダウンロードしました。', 'success');
+    } catch (err) {
+      console.error('Download sample CSV error:', err);
+      showToast('サンプルCSVのダウンロードに失敗しました。', 'error');
+    }
+  };
+
   // Auto-seed or Sync Missing Masters into Firestore
   const handleSeedMastersToDb = async () => {
     setIsSeedingMasters(true);
@@ -1112,14 +1133,24 @@ export default function CsvInvoiceImporter({
             </p>
           </div>
 
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={handleDownloadSampleCsv}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 shadow-sm flex items-center gap-2 transition-all cursor-pointer hover:text-white"
+              title="出荷資料CSVのサンプルフォーマット（UTF-8 BOM付き）をダウンロード"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-400" />
+              <span>サンプルCSVダウンロード</span>
+            </button>
             <button
               type="button"
               onClick={handleLoadSample}
               className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 shadow-sm flex items-center gap-2 transition-all cursor-pointer hover:text-white"
+              title="画面上でサンプルの出荷CSVを直接ロードして解析"
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              <span>サンプルの出荷CSVを読込</span>
+              <span>サンプルCSVを読込</span>
             </button>
             <button
               type="button"
@@ -1299,6 +1330,24 @@ export default function CsvInvoiceImporter({
               <p className="text-xs text-slate-400 mt-1">
                 .csv または .txt 形式の出荷資料ファイルをそのままアップロードできます
               </p>
+              <div className="mt-4 flex items-center justify-center gap-3" onClick={(e) => e.stopPropagation()}>
+                <button
+                  type="button"
+                  onClick={handleDownloadSampleCsv}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 hover:border-emerald-500/50 shadow-xs transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>サンプルCSVをダウンロード (.csv)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLoadSample}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 hover:border-amber-500/50 shadow-xs transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>画面にサンプルを読み込む</span>
+                </button>
+              </div>
             </div>
           </div>
         ) : (
@@ -1311,8 +1360,18 @@ export default function CsvInvoiceImporter({
               rows={7}
               className="w-full bg-slate-950 text-slate-200 border border-slate-800 rounded-xl p-3.5 font-mono text-xs focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-y placeholder:text-slate-600"
             />
-            <div className="flex items-center justify-between text-xs text-slate-500 px-1">
-              <span>{csvText ? `${csvText.split('\n').filter(Boolean).length} 行のデータが入力されています` : 'データ未入力'}</span>
+            <div className="flex flex-wrap items-center justify-between text-xs text-slate-500 px-1 gap-2">
+              <div className="flex items-center gap-3">
+                <span>{csvText ? `${csvText.split('\n').filter(Boolean).length} 行のデータが入力されています` : 'データ未入力'}</span>
+                <button
+                  type="button"
+                  onClick={handleDownloadSampleCsv}
+                  className="text-emerald-400 hover:text-emerald-300 underline underline-offset-2 flex items-center gap-1 cursor-pointer"
+                >
+                  <Download className="w-3 h-3" />
+                  <span>サンプルCSVをダウンロード</span>
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={() => handleParseCsv()}
