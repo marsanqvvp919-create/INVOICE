@@ -403,37 +403,73 @@ export function parseShippingCsv(
   let productCol = 3;
   let qtyCol = 4;
   let trackingCol = -1;
+  let itemNoCol = -1;
 
   let startRowIdx = 0;
+  let bestHeaderRowIdx = -1;
+  let bestMatchScore = 0;
 
-  // Scan first few rows to locate headers
-  for (let r = 0; r < Math.min(rawRows.length, 5); r++) {
+  // Scan first 10 rows to locate the real table header row with highest confidence
+  for (let r = 0; r < Math.min(rawRows.length, 10); r++) {
     const row = rawRows[r];
-    const rowStr = row.join(' ').toLowerCase();
+    let score = 0;
+    let hasClinic = false;
+    let hasProduct = false;
+    let hasQty = false;
 
-    // Check if this row is a header row
-    if (rowStr.includes('company name') || rowStr.includes('クリニック') || rowStr.includes('recipient') || rowStr.includes('packaging items') || rowStr.includes('quantity') || rowStr.includes('invoice')) {
-      startRowIdx = r + 1;
+    row.forEach(cell => {
+      const c = cell.toLowerCase().trim();
+      if (!c) return;
+      if (c.includes('company') || c.includes('clinic') || c.includes('クリニック') || c.includes('医院') || c.includes('配送先') || c.includes('納品先') || c.includes('顧客')) {
+        score++;
+        hasClinic = true;
+      } else if (c.includes('recipient') || c.includes('受取') || c.includes('宛名') || c.includes('医師') || c.includes('担当') || c.includes('ドクター')) {
+        score++;
+      } else if (c.includes('invoice number') || c.includes('invoice no') || c.includes('インボイス番号') || c.includes('請求書番号') || c.includes('請求番号') || c.includes('inv no') || (c.includes('invoice') && !c.includes('drive'))) {
+        score++;
+      } else if (c.includes('packaging items') || c.includes('packaging') || c.includes('product name') || c.includes('product') || c.includes('品名') || c.includes('製剤名') || c.includes('製剤') || c.includes('商品名') || c.includes('商品') || (c.includes('item') && !c.includes('number') && !c.includes('no') && !c.includes('code') && !c.includes('sku') && !c.includes('count'))) {
+        score++;
+        hasProduct = true;
+      } else if (c.includes('quantity') || c.includes('qty') || c.includes('個数') || c.includes('数量') || c.includes('本数') || c.includes('箱数')) {
+        score++;
+        hasQty = true;
+      } else if (c.includes('tracking number') || c.includes('tracking no') || c.includes('tracking') || c.includes('追跡番号') || c.includes('送り状') || c.includes('伝票番号') || c.includes('問合せ番号')) {
+        score++;
+      } else if (c.includes('item number') || c.includes('item no') || c.includes('sku') || c.includes('品番') || c.includes('商品コード')) {
+        score++;
+      }
+    });
 
-      // Identify columns from header
-      row.forEach((cell, idx) => {
-        const cLower = cell.toLowerCase().trim();
-        if (cLower.includes('company') || cLower.includes('clinic') || cLower.includes('クリニック') || cLower.includes('医院')) {
-          clinicCol = idx;
-        } else if (cLower.includes('recipient') || cLower.includes('受取') || cLower.includes('宛名') || cLower.includes('医師')) {
-          recipientCol = idx;
-        } else if (cLower.includes('invoice number') || cLower.includes('invoice no') || cLower.includes('invoice') || cLower.includes('インボイス番号') || cLower.includes('インボイス') || cLower.includes('請求番号') || cLower.includes('inv no') || cLower.includes('inv#')) {
-          invoiceCol = idx;
-        } else if (cLower.includes('packaging items') || cLower.includes('product') || cLower.includes('品名') || cLower.includes('製剤') || cLower.includes('商品')) {
-          productCol = idx;
-        } else if (cLower.includes('quantity') || cLower.includes('qty') || cLower.includes('個数') || cLower.includes('数量')) {
-          qtyCol = idx;
-        } else if (cLower.includes('tracking number') || cLower.includes('tracking no') || cLower.includes('tracking') || cLower.includes('追跡番号') || cLower.includes('送り状') || cLower.includes('問合せ番号') || cLower.includes('お問合せ番号')) {
-          trackingCol = idx;
-        }
-      });
-      break;
+    // A genuine table header must match at least 2 distinct categories, and must contain clinic or (product and qty)
+    if (score >= 2 && (hasClinic || (hasProduct && hasQty)) && score > bestMatchScore) {
+      bestMatchScore = score;
+      bestHeaderRowIdx = r;
     }
+  }
+
+  // If header found, extract column indices from the best matching header row
+  if (bestHeaderRowIdx >= 0) {
+    startRowIdx = bestHeaderRowIdx + 1;
+    const headerRow = rawRows[bestHeaderRowIdx];
+    headerRow.forEach((cell, idx) => {
+      const c = cell.toLowerCase().trim();
+      if (!c) return;
+      if (c.includes('company') || c.includes('clinic') || c.includes('クリニック') || c.includes('医院') || c.includes('配送先') || c.includes('納品先') || c.includes('顧客')) {
+        clinicCol = idx;
+      } else if (c.includes('recipient') || c.includes('受取') || c.includes('宛名') || c.includes('医師') || c.includes('担当') || c.includes('ドクター')) {
+        recipientCol = idx;
+      } else if (c.includes('invoice number') || c.includes('invoice no') || c.includes('インボイス番号') || c.includes('請求書番号') || c.includes('請求番号') || c.includes('inv no') || c.includes('inv#') || (c.includes('invoice') && !c.includes('drive'))) {
+        invoiceCol = idx;
+      } else if (c.includes('item number') || c.includes('item no') || c.includes('sku') || c.includes('品番') || c.includes('商品コード')) {
+        itemNoCol = idx;
+      } else if (c.includes('packaging items') || c.includes('packaging') || c.includes('product name') || c.includes('product') || c.includes('品名') || c.includes('製剤名') || c.includes('製剤') || c.includes('商品名') || c.includes('商品') || c.includes('description') || (c.includes('item') && !c.includes('number') && !c.includes('no') && !c.includes('code') && !c.includes('sku') && !c.includes('count'))) {
+        productCol = idx;
+      } else if (c.includes('quantity') || c.includes('qty') || c.includes('個数') || c.includes('数量') || c.includes('本数') || c.includes('箱数')) {
+        qtyCol = idx;
+      } else if (c.includes('tracking number') || c.includes('tracking no') || c.includes('tracking') || c.includes('追跡番号') || c.includes('送り状') || c.includes('伝票番号') || c.includes('問合せ番号') || c.includes('お問合せ番号')) {
+        trackingCol = idx;
+      }
+    });
   }
 
   // Override if manually specified
@@ -458,6 +494,7 @@ export function parseShippingCsv(
     const colTrackingVal = trackingCol >= 0 && trackingCol < row.length ? (row[trackingCol] || '').trim() : '';
     const colProductVal = (row[productCol] || '').trim();
     const colQtyStr = (row[qtyCol] || '').trim();
+    const colItemNoVal = itemNoCol >= 0 && itemNoCol < row.length ? (row[itemNoCol] || '').trim() : '';
 
     // Check if this row is an informational header repeated or blank row
     if (colAVal.toLowerCase().includes('company name') || (colAVal === '' && colProductVal === '')) {
@@ -552,7 +589,7 @@ export function parseShippingCsv(
         }
       }
       const unitWeight = prodObj ? (prodObj.weight || 0.04) : 0.04;
-      const sku = prodObj ? prodObj.sku : `SKU-${normalizeStr(colProductVal).substring(0, 8).toUpperCase()}`;
+      const sku = colItemNoVal ? colItemNoVal : (prodObj ? prodObj.sku : `SKU-${normalizeStr(colProductVal).substring(0, 8).toUpperCase()}`);
       const nameEn = prodObj ? prodObj.nameEn : colProductVal;
       const nameJa = prodObj ? prodObj.nameJa : colProductVal;
       const unit = prodObj ? (prodObj.unit || 'vials') : 'vials';
