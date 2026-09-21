@@ -1,4 +1,5 @@
 import { Shipment, SystemSettings } from '../types';
+import { getMaxSequenceFromCache, getUsedInvoiceNumbersFromCache } from './dailyInvoiceCache';
 
 /**
  * Extracts date information and sequence number from an invoice number string.
@@ -55,13 +56,11 @@ export function isInvoiceMatchingDate(invoiceNo: string, targetDateStr: string):
  */
 export function getMaxSequenceForDate(
   targetDateStr: string,
-  existingShipments: Shipment[] = []
+  existingShipments: Shipment[] = [],
+  includeCache: boolean = true
 ): number {
   if (!targetDateStr) return 0;
   
-  const clean8 = targetDateStr.replace(/-/g, ''); // e.g. "20260920"
-  const clean6 = clean8.slice(2); // e.g. "260920"
-
   let maxSeq = 0;
   let matchingShipmentsCount = 0;
 
@@ -76,8 +75,15 @@ export function getMaxSequenceForDate(
     }
   }
 
-  // Ensure sequence is at least equal to the count of matching shipments for that date
-  return Math.max(maxSeq, matchingShipmentsCount);
+  let result = Math.max(maxSeq, matchingShipmentsCount);
+
+  // Cross-reference with persistent daily browser cache
+  if (includeCache) {
+    const cacheMax = getMaxSequenceFromCache(targetDateStr);
+    result = Math.max(result, cacheMax);
+  }
+
+  return result;
 }
 
 /**
@@ -109,7 +115,7 @@ export interface ResolvedInvoiceAllocation {
 
 /**
  * Resolves sequential invoice numbers for a list of clinic allocations,
- * guaranteeing ZERO collision within the target date.
+ * guaranteeing ZERO collision within the target date (considering both DB and cache).
  */
 export function resolveBatchInvoiceNumbers(
   items: Array<{
@@ -119,13 +125,14 @@ export function resolveBatchInvoiceNumbers(
   }>,
   targetDateStr: string,
   existingShipments: Shipment[] = [],
-  settings?: SystemSettings
+  settings?: SystemSettings,
+  includeCache: boolean = true
 ): Map<string, ResolvedInvoiceAllocation> {
   const prefix = settings?.prefix || 'INV-';
   const clean8 = targetDateStr.replace(/-/g, '');
   const clean6 = clean8.slice(2);
 
-  // Set of all already-used invoice numbers in the database (normalized lowercase)
+  // Set of all already-used invoice numbers in the database and cache (normalized lowercase)
   const usedInvoiceNumbers = new Set<string>();
   existingShipments.forEach(s => {
     if (s.invoiceNo) {
@@ -133,8 +140,13 @@ export function resolveBatchInvoiceNumbers(
     }
   });
 
-  // Calculate the starting sequence number for this date from existing database records
-  let nextSeq = getMaxSequenceForDate(targetDateStr, existingShipments) + 1;
+  if (includeCache) {
+    const cacheUsed = getUsedInvoiceNumbersFromCache(targetDateStr);
+    cacheUsed.forEach(no => usedInvoiceNumbers.add(no));
+  }
+
+  // Calculate the starting sequence number for this date from existing database records + cache
+  let nextSeq = getMaxSequenceForDate(targetDateStr, existingShipments, includeCache) + 1;
 
   const results = new Map<string, ResolvedInvoiceAllocation>();
 

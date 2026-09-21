@@ -43,7 +43,8 @@ import StockManagement from './components/StockManagement';
 import SystemSettings from './components/SystemSettings';
 import AuditLogs from './components/AuditLogs';
 import { loadJapaneseFont } from './lib/pdf';
-import { getMaxSequenceForDate, formatStandardInvoiceNo } from './lib/invoiceSequence';
+import { getMaxSequenceForDate, formatStandardInvoiceNo, parseInvoiceNo } from './lib/invoiceSequence';
+import { syncShipmentsToCache, recordIssuedInvoices } from './lib/dailyInvoiceCache';
 
 // Static default user context for audits/created-by fields
 const currentUser: User = { uid: 'system', name: 'システム管理者', email: 'system@example.com', role: 'ADMIN' };
@@ -127,7 +128,9 @@ export default function App() {
     const unsubShipments = onSnapshot(collection(db, 'shipments'), (snap) => {
       const list: Shipment[] = [];
       snap.forEach(doc => list.push({ id: doc.id, ...doc.data() } as Shipment));
-      setShipments(list.sort((a, b) => (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '')));
+      const sorted = list.sort((a, b) => (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || ''));
+      setShipments(sorted);
+      syncShipmentsToCache(sorted);
     });
 
     const unsubAudit = onSnapshot(collection(db, 'auditLogs'), (snap) => {
@@ -487,6 +490,16 @@ export default function App() {
       createdShipment = shipmentData;
     });
 
+    if (createdShipment) {
+      recordIssuedInvoices([{
+        invoiceNo: (createdShipment as Shipment).invoiceNo,
+        date: (createdShipment as Shipment).date,
+        sequenceNumber: parseInvoiceNo((createdShipment as Shipment).invoiceNo)?.sequence,
+        clinicName: (createdShipment as Shipment).clinicSnapshot?.name || (createdShipment as Shipment).clinicSnapshot?.nameEn,
+        source: 'MANUAL'
+      }]);
+    }
+
     await logAuditAction('SHIPMENT_CREATE', invoiceNo, 'None', `Created shipment as ${status}`);
     return { invoiceNo, shipment: createdShipment! };
   };
@@ -570,6 +583,16 @@ export default function App() {
 
       createdList.push(newShipment);
       await logAuditAction('SHIPMENT_CREATE_BULK', invoiceNo, 'None', 'Bulk Created and Confirmed');
+    }
+
+    if (createdList.length > 0) {
+      recordIssuedInvoices(createdList.map(s => ({
+        invoiceNo: s.invoiceNo,
+        date: s.date,
+        sequenceNumber: parseInvoiceNo(s.invoiceNo)?.sequence,
+        clinicName: s.clinicSnapshot?.name || s.clinicSnapshot?.nameEn,
+        source: 'DB_SAVE'
+      })));
     }
 
     return createdList;

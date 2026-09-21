@@ -38,7 +38,10 @@ import {
   Save,
   SlidersHorizontal,
   Plus,
-  Hash
+  Hash,
+  History,
+  RotateCcw,
+  Clock
 } from 'lucide-react';
 import { 
   Clinic, 
@@ -57,7 +60,15 @@ import {
   ClinicDataValidation
 } from '../lib/csvInvoiceParser';
 import { generateShipmentsZip, generateInvoicePDF } from '../lib/pdf';
-import { getMaxSequenceForDate, formatStandardInvoiceNo, resolveBatchInvoiceNumbers } from '../lib/invoiceSequence';
+import { getMaxSequenceForDate, formatStandardInvoiceNo, resolveBatchInvoiceNumbers, parseInvoiceNo } from '../lib/invoiceSequence';
+import { 
+  useDailyInvoiceCache, 
+  recordIssuedInvoices, 
+  clearCachedInvoicesForDate, 
+  clearAllInvoiceCache, 
+  CachedInvoiceRecord,
+  syncShipmentsToCache
+} from '../lib/dailyInvoiceCache';
 import { SAMPLE_CLINICS_MASTER, SAMPLE_PRODUCTS_MASTER } from '../data/sampleClinicProductData';
 import { db } from '../lib/firebase';
 import { collection, writeBatch, doc, addDoc, getDocs } from 'firebase/firestore';
@@ -199,10 +210,22 @@ export default function CsvInvoiceImporter({
   const [shippingDate, setShippingDate] = useState<string>(new Date().toISOString().substring(0, 10));
   const [currency, setCurrency] = useState<'JPY' | 'USD' | 'KRW' | 'EUR'>('JPY');
 
-  // Compute maximum existing sequence for the selected shipping date from existing shipments
+  // Daily Issued Invoice Cache hook (auto-tracks browser localStorage cache for current shipping date)
+  const {
+    cachedInvoices: todayCachedInvoices,
+    maxSequence: todayCachedMaxSeq,
+    clearForDate: clearTodayCache,
+    refresh: refreshTodayCache
+  } = useDailyInvoiceCache(shippingDate);
+
+  // State to control viewing today's cached invoices modal
+  const [showCacheModal, setShowCacheModal] = useState<boolean>(false);
+
+  // Compute maximum existing sequence for the selected shipping date (combines DB shipments + local cache)
   const currentDayMaxSeq = useMemo(() => {
-    return getMaxSequenceForDate(shippingDate, shipments || []);
-  }, [shippingDate, shipments]);
+    const fromDb = getMaxSequenceForDate(shippingDate, shipments || [], false);
+    return Math.max(fromDb, todayCachedMaxSeq);
+  }, [shippingDate, shipments, todayCachedMaxSeq]);
 
   // Parsing Options
   const [showConfigAccordion, setShowConfigAccordion] = useState<boolean>(false);
@@ -1074,6 +1097,15 @@ export default function CsvInvoiceImporter({
       URL.revokeObjectURL(url);
 
       showToast(`全 ${selectedShipments.length} 通のインボイスPDFを一括ZIPとしてダウンロードしました！`, 'success');
+
+      // Record issued invoices into browser localStorage cache so that subsequent batches on the same day never duplicate!
+      recordIssuedInvoices(selectedShipments.map(s => ({
+        invoiceNo: s.invoiceNo,
+        date: s.date || shippingDate,
+        sequenceNumber: parseInvoiceNo(s.invoiceNo)?.sequence,
+        clinicName: s.clinicSnapshot?.name || s.clinicSnapshot?.nameEn || s.clinic?.name,
+        source: 'ZIP_EXPORT'
+      })));
     } catch (err: any) {
       console.error('ZIP Generation Error:', err);
       showToast(`ZIP作成中にエラーが発生しました: ${err.message || 'エラー'}`, 'error');
@@ -1152,7 +1184,21 @@ export default function CsvInvoiceImporter({
       });
 
       await batch.commit();
-      showToast(`全 ${selectedShipments.length} 件のインボイスを出荷履歴データベースに保存・確定しました！（重複ゼロ通番確認済）`, 'success');
+
+      // Record to persistent daily cache
+      recordIssuedInvoices(selectedShipments.map(s => {
+        const resolved = resolvedMap.get(s.id);
+        const finalInvoiceNo = resolved?.invoiceNo || s.invoiceNo;
+        return {
+          invoiceNo: finalInvoiceNo,
+          date: s.date || shippingDate,
+          sequenceNumber: resolved?.sequenceNumber || parseInvoiceNo(finalInvoiceNo)?.sequence,
+          clinicName: s.clinicSnapshot?.name || s.clinicSnapshot?.nameEn || s.clinic?.name,
+          source: 'DB_SAVE'
+        };
+      }));
+
+      showToast(`全 ${selectedShipments.length} 件のインボイスを出荷履歴データベースに保存・確定しました！（重複ゼロ通番・キャッシュ同期完了）`, 'success');
     } catch (err: any) {
       console.error('Database Save Error:', err);
       showToast(`データベース保存中にエラーが発生しました: ${err.message || 'エラー'}`, 'error');
@@ -1189,6 +1235,50 @@ export default function CsvInvoiceImporter({
       setPreviewPdfUrl(null);
     }
     setPreviewShipment(null);
+  };
+
+  // Action: Reset Daily Invoice Sequence Cache for Selected Date
+  const handleResetDailyCache = () => {
+    const confirmReset = window.confirm(
+      `【本日通番キャッシュのリセット確認】\n\n` +
+      `指定日（${shippingDate}）の発行済みキャッシュ（${todayCachedInvoices.length}件）をクリアしますか？\n\n` +
+      `※キャッシュをクリアすると、次回生成されるインボイス番号は再び #001 から開始します。\n` +
+      `（テスト作成のやり直し等に便利です。データベースに保存済みの出荷履歴は削除されません）`
+    );
+    if (!confirmReset) return;
+
+    clearTodayCache();
+    if (parseResult && parseResult.allocations.length > 0) {
+      const resequenced = resequenceAllocationsForDate(
+        parseResult.allocations,
+        shippingDate,
+        shipments,
+        settings
+      );
+      setParseResult({
+        ...parseResult,
+        allocations: resequenced
+      });
+    }
+    showToast(`本日（${shippingDate}）の発行キャッシュをリセットしました。通番は #001 から再割り当てされます。`, 'info');
+  };
+
+  // Action: Reserve / Commit Current Batch to Cache
+  const handleCommitCurrentBatchToCache = () => {
+    if (selectedShipments.length === 0) {
+      showToast('キャッシュに保持するインボイスを選択してください。', 'error');
+      return;
+    }
+
+    recordIssuedInvoices(selectedShipments.map(s => ({
+      invoiceNo: s.invoiceNo,
+      date: s.date || shippingDate,
+      sequenceNumber: parseInvoiceNo(s.invoiceNo)?.sequence,
+      clinicName: s.clinicSnapshot?.name || s.clinicSnapshot?.nameEn || s.clinic?.name,
+      source: 'CSV_IMPORT'
+    })));
+
+    showToast(`選択中の ${selectedShipments.length} 件を通番キャッシュに保持しました！次回の取込時も連番が重複しません。`, 'success');
   };
 
   return (
@@ -1319,16 +1409,32 @@ export default function CsvInvoiceImporter({
               />
             </div>
 
-            {/* Daily Sequence Status Indicator */}
+            {/* Daily Sequence Status & Persistent Cache Indicator */}
             <div 
-              className="flex items-center gap-1.5 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-xs"
-              title="出荷履歴DBと連動し、同日内の重複を防止して通番を確実に継続します"
+              className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-xs shadow-sm"
+              title="出荷履歴DBとブラウザキャッシュを二重チェックし、本日中の通番被りを完全防止します"
             >
-              <Hash className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="text-slate-400">本日通番管理:</span>
-              <span className="font-mono font-bold text-emerald-400">
-                {currentDayMaxSeq > 0 ? `#${String(currentDayMaxSeq).padStart(3, '0')} 発行済（次回開始: #${String(currentDayMaxSeq + 1).padStart(3, '0')}〜）` : '未発行（#001から開始）'}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <Hash className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="text-slate-400">本日通番:</span>
+                <span className="font-mono font-bold text-emerald-400">
+                  {currentDayMaxSeq > 0 ? `#${String(currentDayMaxSeq).padStart(3, '0')} 発行済 (次回 #${String(currentDayMaxSeq + 1).padStart(3, '0')}〜)` : '未発行 (#001〜)'}
+                </span>
+                {todayCachedInvoices.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded text-[10px] bg-blue-500/20 text-blue-300 font-bold border border-blue-500/30">
+                    キャッシュ {todayCachedInvoices.length}件
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCacheModal(true)}
+                className="ml-1 px-2 py-0.5 rounded text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 flex items-center gap-1 cursor-pointer transition-colors"
+                title="本日発行済みの通番キャッシュ履歴を確認・リセット"
+              >
+                <History className="w-3 h-3 text-cyan-400" />
+                <span>履歴/リセット</span>
+              </button>
             </div>
 
             {/* Currency */}
@@ -1756,6 +1862,18 @@ export default function CsvInvoiceImporter({
 
             {/* Primary Action Buttons */}
             <div className="flex flex-wrap items-center gap-2.5">
+              {/* Commit current batch to daily cache button */}
+              <button
+                type="button"
+                onClick={handleCommitCurrentBatchToCache}
+                disabled={selectedShipments.length === 0}
+                className="px-3.5 py-2.5 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-blue-300 border border-blue-500/30 flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+                title="現在のインボイス番号を本日発行キャッシュに記録し、次回以降の通番重複を事前に防ぎます"
+              >
+                <Hash className="w-4 h-4 text-blue-400" />
+                <span>通番キャッシュに保持</span>
+              </button>
+
               {/* ZIP Export Button */}
               <button
                 type="button"
@@ -2326,6 +2444,16 @@ export default function CsvInvoiceImporter({
                   <a
                     href={previewPdfUrl}
                     download={`${previewShipment.invoiceNo}_INVOICE.pdf`}
+                    onClick={() => {
+                      recordIssuedInvoices([{
+                        invoiceNo: previewShipment.invoiceNo,
+                        date: previewShipment.date || shippingDate,
+                        sequenceNumber: parseInvoiceNo(previewShipment.invoiceNo)?.sequence,
+                        clinicName: previewShipment.clinicSnapshot?.name || previewShipment.clinicSnapshot?.nameEn,
+                        source: 'PDF_DOWNLOAD'
+                      }]);
+                      showToast(`インボイス ${previewShipment.invoiceNo} をダウンロードし、本日発行キャッシュに記録しました。`, 'success');
+                    }}
                     className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors"
                   >
                     <Download className="w-3.5 h-3.5" />
@@ -2970,6 +3098,196 @@ export default function CsvInvoiceImporter({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Today's Issued Invoice Cache Modal */}
+      {showCacheModal && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-3xl shadow-2xl overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center justify-center">
+                  <History className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>本日発行インボイス キャッシュ管理</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-bold border border-blue-500/30 font-mono">
+                      {shippingDate}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    本日発行された通番をブラウザ内にキャッシュし、同日中の重複を完全防止して連番を継続します
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCacheModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+              {/* Summary Metric Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-[11px] text-slate-400 block font-medium">対象発送日</span>
+                  <span className="text-sm font-bold text-white font-mono mt-0.5 block">{shippingDate}</span>
+                </div>
+                <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-[11px] text-slate-400 block font-medium">キャッシュ保持数</span>
+                  <span className="text-sm font-bold text-blue-400 font-mono mt-0.5 block">{todayCachedInvoices.length} 件</span>
+                </div>
+                <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-[11px] text-slate-400 block font-medium">本日最新通番</span>
+                  <span className="text-sm font-bold text-emerald-400 font-mono mt-0.5 block">
+                    {currentDayMaxSeq > 0 ? `#${String(currentDayMaxSeq).padStart(3, '0')}` : 'なし'}
+                  </span>
+                </div>
+                <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-[11px] text-slate-400 block font-medium">次回採番開始</span>
+                  <span className="text-sm font-bold text-cyan-400 font-mono mt-0.5 block">
+                    #{String(currentDayMaxSeq + 1).padStart(3, '0')}〜
+                  </span>
+                </div>
+              </div>
+
+              {/* Info Box */}
+              <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-blue-200">
+                <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                <div className="leading-relaxed">
+                  <p className="font-semibold text-white mb-0.5">通番重複防止キャッシュの仕組み</p>
+                  <p className="text-slate-300">
+                    ZIP出力やDB保存、PDFダウンロードを行ったインボイス番号はブラウザのローカルストレージに自動記録されます。
+                    同日中に2回目以降のCSVをインポートした際、このキャッシュを参照して最新通番の続き（#{String(currentDayMaxSeq + 1).padStart(3, '0')}〜）から自動採番されるため、番号の衝突・被りが発生しません。
+                  </p>
+                </div>
+              </div>
+
+              {/* Cached Invoices List */}
+              <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950/50">
+                <div className="px-4 py-2.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                    <History className="w-3.5 h-3.5 text-blue-400" />
+                    本日（{shippingDate}）発行済みインボイス一覧 ({todayCachedInvoices.length}件)
+                  </span>
+                  {todayCachedInvoices.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleResetDailyCache}
+                      className="px-2.5 py-1 rounded text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 hover:text-rose-200 border border-rose-500/30 flex items-center gap-1 cursor-pointer transition-colors"
+                      title="本日の通番キャッシュをクリアして #001 に戻す"
+                    >
+                      <Trash2 className="w-3 h-3 text-rose-400" />
+                      <span>キャッシュをリセット</span>
+                    </button>
+                  )}
+                </div>
+
+                {todayCachedInvoices.length === 0 ? (
+                  <div className="p-8 text-center text-slate-500 text-xs">
+                    <p>本日（{shippingDate}）の発行キャッシュはまだありません。</p>
+                    <p className="text-slate-600 mt-1">
+                      インボイスのZIP出力、DB保存、または「通番キャッシュに保持」を行うとここに記録されます。
+                    </p>
+                  </div>
+                ) : (
+                  <div className="max-h-60 overflow-y-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-900/80 text-[11px] text-slate-400 border-b border-slate-800 font-medium">
+                          <th className="py-2 px-3">通番</th>
+                          <th className="py-2 px-3">インボイス番号</th>
+                          <th className="py-2 px-3">宛先クリニック</th>
+                          <th className="py-2 px-3">発行種別</th>
+                          <th className="py-2 px-3 text-right">発行時刻</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono">
+                        {todayCachedInvoices.map((rec, idx) => (
+                          <tr key={`${rec.invoiceNo}_${idx}`} className="hover:bg-slate-900/50 transition-colors">
+                            <td className="py-2 px-3 text-emerald-400 font-bold">
+                              #{String(rec.sequenceNumber || idx + 1).padStart(3, '0')}
+                            </td>
+                            <td className="py-2 px-3 text-white font-bold">
+                              {rec.invoiceNo}
+                            </td>
+                            <td className="py-2 px-3 font-sans text-slate-300">
+                              {rec.clinicName || '指定なし'}
+                            </td>
+                            <td className="py-2 px-3 font-sans">
+                              {rec.source === 'ZIP_EXPORT' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                                  ZIP出力
+                                </span>
+                              )}
+                              {rec.source === 'DB_SAVE' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                  DB保存
+                                </span>
+                              )}
+                              {rec.source === 'PDF_DOWNLOAD' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                                  個別PDF
+                                </span>
+                              )}
+                              {rec.source === 'CSV_IMPORT' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                  事前予約
+                                </span>
+                              )}
+                              {(!rec.source || rec.source === 'MANUAL') && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700">
+                                  手動登録
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-right text-[11px] text-slate-400">
+                              {rec.issuedAt ? new Date(rec.issuedAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-5 py-3 border-t border-slate-800 bg-slate-950 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  if (shipments && shipments.length > 0) {
+                    syncShipmentsToCache(shipments);
+                    showToast('出荷履歴DBから最新の発行履歴をキャッシュに再同期しました。', 'success');
+                  } else {
+                    showToast('出荷履歴DBにデータがありません。', 'info');
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 flex items-center gap-1.5 cursor-pointer transition-colors"
+                title="データベースにある出荷履歴とローカルキャッシュを同期します"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-blue-400" />
+                <span>DB出荷履歴から再同期</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowCacheModal(false)}
+                className="px-4 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white cursor-pointer"
+              >
+                閉じる
+              </button>
+            </div>
           </div>
         </div>
       )}
