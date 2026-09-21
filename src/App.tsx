@@ -43,6 +43,7 @@ import StockManagement from './components/StockManagement';
 import SystemSettings from './components/SystemSettings';
 import AuditLogs from './components/AuditLogs';
 import { loadJapaneseFont } from './lib/pdf';
+import { getMaxSequenceForDate, formatStandardInvoiceNo } from './lib/invoiceSequence';
 
 // Static default user context for audits/created-by fields
 const currentUser: User = { uid: 'system', name: 'システム管理者', email: 'system@example.com', role: 'ADMIN' };
@@ -426,26 +427,25 @@ export default function App() {
 
   // Helper: auto-generate unique Invoice Number securely (INV-YYYYMMDD-XXX)
   const generateInvoiceNo = async (dateStr: string): Promise<string> => {
-    const cleanDate = dateStr.replace(/-/g, ''); // YYYYMMDD
-    const prefix = settings.prefix || 'INV-';
-    
-    // Count existing shipments for this date to make increment
     const snap = await getDocs(collection(db, 'shipments'));
-    let dayCount = 1;
-    snap.forEach(d => {
-      const s = d.data() as Shipment;
-      if (s.date === dateStr) {
-        dayCount++;
-      }
-    });
-
-    const seq = String(dayCount).padStart(3, '0');
-    return `${prefix}${cleanDate}-${seq}`;
+    const allExistingShipments = snap.docs.map(d => d.data() as Shipment);
+    const maxSeq = getMaxSequenceForDate(dateStr, allExistingShipments);
+    return formatStandardInvoiceNo(settings.prefix || 'INV-', dateStr, maxSeq + 1);
   };
 
   // 4. Submit Single Shipment / Invoice Handler
   const handleSubmitShipment = async (payload: any, status: 'DRAFT' | 'CONFIRMED'): Promise<{ invoiceNo: string; shipment: Shipment }> => {
-    const invoiceNo = await generateInvoiceNo(payload.date);
+    // Fetch fresh shipments from DB to check duplicate and ensure sequential number
+    const snap = await getDocs(collection(db, 'shipments'));
+    const allExistingShipments = snap.docs.map(d => d.data() as Shipment);
+    
+    let invoiceNo = payload.invoiceNo && String(payload.invoiceNo).trim() ? String(payload.invoiceNo).trim() : '';
+    const isAlreadyUsed = invoiceNo && allExistingShipments.some(s => s.invoiceNo?.trim().toLowerCase() === invoiceNo.toLowerCase());
+    
+    if (!invoiceNo || isAlreadyUsed) {
+      const maxSeq = getMaxSequenceForDate(payload.date, allExistingShipments);
+      invoiceNo = formatStandardInvoiceNo(settings.prefix || 'INV-', payload.date, maxSeq + 1);
+    }
     let createdShipment: Shipment | null = null;
     
     await runTransaction(db, async (transaction) => {
@@ -498,6 +498,10 @@ export default function App() {
     // Fetch all shipments once to count existing ones and avoid race conditions / stale cache
     const shipmentsSnap = await getDocs(collection(db, 'shipments'));
     const allExistingShipments = shipmentsSnap.docs.map(d => d.data() as Shipment);
+    const usedInvoiceNosInBatch = new Set<string>();
+    allExistingShipments.forEach(s => {
+      if (s.invoiceNo) usedInvoiceNosInBatch.add(s.invoiceNo.trim().toLowerCase());
+    });
 
     // Keep track of counts per date (both existing and newly added in this batch)
     const dateCounts: Record<string, number> = {};
@@ -505,17 +509,25 @@ export default function App() {
     for (const payload of shipmentsPayloads) {
       const dateStr = payload.date;
       if (dateCounts[dateStr] === undefined) {
-        // Count how many exist in DB for this date
-        const dbCount = allExistingShipments.filter(s => s.date === dateStr).length;
-        dateCounts[dateStr] = dbCount + 1;
+        // Count how many exist in DB for this date using robust sequence calculator
+        const maxSeq = getMaxSequenceForDate(dateStr, allExistingShipments);
+        dateCounts[dateStr] = maxSeq + 1;
       } else {
         dateCounts[dateStr] += 1;
       }
 
-      const cleanDate = dateStr.replace(/-/g, ''); // YYYYMMDD
       const prefix = settings.prefix || 'INV-';
-      const seq = String(dateCounts[dateStr]).padStart(3, '0');
-      const invoiceNo = `${prefix}${cleanDate}-${seq}`;
+      const candidateNo = payload.invoiceNo && String(payload.invoiceNo).trim();
+      const isAlreadyUsed = candidateNo && usedInvoiceNosInBatch.has(candidateNo.toLowerCase());
+
+      let invoiceNo: string;
+      if (candidateNo && !isAlreadyUsed) {
+        invoiceNo = candidateNo;
+        usedInvoiceNosInBatch.add(candidateNo.toLowerCase());
+      } else {
+        invoiceNo = formatStandardInvoiceNo(prefix, dateStr, dateCounts[dateStr]);
+        usedInvoiceNosInBatch.add(invoiceNo.toLowerCase());
+      }
       
       const newShipment = await runTransaction(db, async (transaction) => {
         const warehouseRef = payload.warehouseId ? doc(db, 'warehouses', payload.warehouseId) : null;
@@ -1505,6 +1517,7 @@ export default function App() {
               products={products}
               warehouses={warehouses}
               settings={settings}
+              shipments={shipments}
               onNavigateToShipments={() => setActiveTab('shipments')}
               onAddClinic={handleAddClinic}
             />

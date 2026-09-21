@@ -181,7 +181,7 @@ export default function Dashboard({
               </span>
             </div>
             <p className="text-slate-400 text-xs mt-0.5">
-              CSVのA列（クリニック名）とE列（製剤名）をDB参照、B列・C列を無視してシステム自動採番・医師名自動取得し、一式でインボイスPDFを発行できます。
+              CSVのA列（クリニック名）とE列（製剤名）をDB参照、インボイス番号の反映（未記載時は自動採番）・医師名自動取得を行い、一式でインボイスPDFを発行できます。
             </p>
           </div>
         </div>

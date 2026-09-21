@@ -680,7 +680,7 @@ export default function BulkAllocation({
                 </span>
               </div>
               <p className="text-slate-300 text-xs mt-0.5">
-                A列（クリニック名）とE列（製剤名）をデータベースと自動照合。B列・C列を無視してシステム自動採番・医師名自動取得し、一式でインボイスPDFを発行できます。
+                A列（クリニック名）とE列（製剤名）をデータベースと自動照合。インボイス番号の反映（未記載時は自動採番）・医師名自動取得を行い、一式でインボイスPDFを発行できます。
               </p>
             </div>
           </div>

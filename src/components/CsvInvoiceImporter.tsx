@@ -37,7 +37,8 @@ import {
   Trash2,
   Save,
   SlidersHorizontal,
-  Plus
+  Plus,
+  Hash
 } from 'lucide-react';
 import { 
   Clinic, 
@@ -49,21 +50,24 @@ import {
 import { 
   parseShippingCsv, 
   convertAllocationsToShipments, 
+  resequenceAllocationsForDate,
   CsvParseResult, 
   ParsedClinicAllocation,
   validateClinicInvoiceCompleteness,
   ClinicDataValidation
 } from '../lib/csvInvoiceParser';
 import { generateShipmentsZip, generateInvoicePDF } from '../lib/pdf';
+import { getMaxSequenceForDate, formatStandardInvoiceNo, resolveBatchInvoiceNumbers } from '../lib/invoiceSequence';
 import { SAMPLE_CLINICS_MASTER, SAMPLE_PRODUCTS_MASTER } from '../data/sampleClinicProductData';
 import { db } from '../lib/firebase';
-import { collection, writeBatch, doc, addDoc } from 'firebase/firestore';
+import { collection, writeBatch, doc, addDoc, getDocs } from 'firebase/firestore';
 
 interface CsvInvoiceImporterProps {
   clinics: Clinic[];
   products: Product[];
   warehouses: Warehouse[];
   settings: SystemSettings;
+  shipments?: Shipment[];
   onNavigateToShipments?: () => void;
   onRefreshMasters?: () => void;
   onAddClinic?: (clinic: Omit<Clinic, 'id' | 'createdAt'>) => Promise<string | void>;
@@ -163,6 +167,7 @@ export default function CsvInvoiceImporter({
   products,
   warehouses,
   settings,
+  shipments = [],
   onNavigateToShipments,
   onRefreshMasters,
   onAddClinic
@@ -193,6 +198,11 @@ export default function CsvInvoiceImporter({
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>(defaultWh.id);
   const [shippingDate, setShippingDate] = useState<string>(new Date().toISOString().substring(0, 10));
   const [currency, setCurrency] = useState<'JPY' | 'USD' | 'KRW' | 'EUR'>('JPY');
+
+  // Compute maximum existing sequence for the selected shipping date from existing shipments
+  const currentDayMaxSeq = useMemo(() => {
+    return getMaxSequenceForDate(shippingDate, shipments || []);
+  }, [shippingDate, shipments]);
 
   // Parsing Options
   const [showConfigAccordion, setShowConfigAccordion] = useState<boolean>(false);
@@ -229,6 +239,7 @@ export default function CsvInvoiceImporter({
     zip: string;
     corporationName: string;
     contactPerson: string;
+    invoiceNo: string;
   }>({
     name: '',
     nameEn: '',
@@ -238,8 +249,39 @@ export default function CsvInvoiceImporter({
     phone: '',
     zip: '',
     corporationName: '',
-    contactPerson: ''
+    contactPerson: '',
+    invoiceNo: ''
   });
+
+  // Invoice Number Inline Edit State
+  const [editingInvoiceAllocId, setEditingInvoiceAllocId] = useState<string | null>(null);
+  const [tempInvoiceNo, setTempInvoiceNo] = useState<string>('');
+
+  const handleSaveInvoiceNo = (allocId: string) => {
+    if (!tempInvoiceNo.trim()) {
+      showToast('インボイス番号を入力してください。', 'error');
+      return;
+    }
+    const cleanNo = tempInvoiceNo.trim();
+    setParseResult(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        allocations: prev.allocations.map(a => {
+          if (a.id === allocId) {
+            return {
+              ...a,
+              systemGeneratedInvoiceNo: cleanNo,
+              isInvoiceNoFromCsv: true
+            };
+          }
+          return a;
+        })
+      };
+    });
+    setEditingInvoiceAllocId(null);
+    showToast(`インボイス番号を「${cleanNo}」に変更しました`, 'success');
+  };
 
   // Item Editing Modal State (SKU名, 商品名, 価格, 数量, 単位)
   const [editingItemModal, setEditingItemModal] = useState<{
@@ -283,8 +325,25 @@ export default function CsvInvoiceImporter({
     return warehouses.find(w => w.id === selectedWarehouseId) || defaultWh;
   }, [warehouses, selectedWarehouseId, defaultWh]);
 
+  // Handle shipping date change and automatically re-sequence invoice numbers
+  const handleShippingDateChange = (newDate: string) => {
+    setShippingDate(newDate);
+    if (parseResult && parseResult.allocations.length > 0) {
+      const resequenced = resequenceAllocationsForDate(
+        parseResult.allocations,
+        newDate,
+        shipments,
+        settings
+      );
+      setParseResult({
+        ...parseResult,
+        allocations: resequenced
+      });
+    }
+  };
+
   // Execute parsing when csvText or options change
-  const handleParseCsv = (textToParse: string = csvText) => {
+  const handleParseCsv = (textToParse: string = csvText, targetDate: string = shippingDate) => {
     if (!textToParse || !textToParse.trim()) {
       showToast('解析するCSVデータを入力またはアップロードしてください。', 'error');
       return;
@@ -300,7 +359,9 @@ export default function CsvInvoiceImporter({
         {
           productCol: productColOverride,
           qtyCol: qtyColOverride
-        }
+        },
+        shipments,
+        targetDate
       );
 
       setParseResult(result);
@@ -311,7 +372,7 @@ export default function CsvInvoiceImporter({
       if (result.allocations.length === 0) {
         showToast('有効な出荷データが見つかりませんでした。ヘッダーや形式をご確認ください。', 'error');
       } else {
-        showToast(`CSVを正常に解析しました（クリニック: ${result.totalClinics}件、製剤品目: ${result.totalItemsCount}行）。`, 'success');
+        showToast(`CSVを正常に解析しました（クリニック: ${result.totalClinics}件、製剤品目: ${result.totalItemsCount}行、インボイス通番自動割り当て済）。`, 'success');
       }
     } catch (err: any) {
       console.error('CSV Parsing Error:', err);
@@ -522,7 +583,8 @@ export default function CsvInvoiceImporter({
       phone: existing?.phone || '',
       zip: existing?.zip || '',
       corporationName: existing?.corporationName || '',
-      contactPerson: existing?.contactPerson || ''
+      contactPerson: existing?.contactPerson || '',
+      invoiceNo: alloc.systemGeneratedInvoiceNo || ''
     });
 
     setIsManualModalOpen(true);
@@ -641,8 +703,13 @@ export default function CsvInvoiceImporter({
               nextWarnings.push(`【データ不十分】必須項目未入力: ${clinicValidation.missingFieldLabels.join('、')}`);
             }
 
+            const updatedInvoiceNo = manualForm.invoiceNo.trim() || alloc.systemGeneratedInvoiceNo;
+            const updatedIsCsv = manualForm.invoiceNo.trim() ? true : alloc.isInvoiceNoFromCsv;
+
             return {
               ...alloc,
+              systemGeneratedInvoiceNo: updatedInvoiceNo,
+              isInvoiceNoFromCsv: updatedIsCsv,
               matchedClinic: resultingClinic,
               isDbMatched: true,
               dbLookupSource: saveToMaster ? ('FIRESTORE' as const) : ('MASTER_PRESET' as const),
@@ -1056,18 +1123,36 @@ export default function CsvInvoiceImporter({
 
     setIsSavingDb(true);
     try {
+      // 1. Fetch latest shipments from Firestore to guard against concurrent writes or stale state
+      const freshSnap = await getDocs(collection(db, 'shipments'));
+      const freshShipments = freshSnap.docs.map(d => ({ id: d.id, ...d.data() } as Shipment));
+
+      // 2. Resolve final invoice numbers against fresh DB shipments
+      const resolvedMap = resolveBatchInvoiceNumbers(
+        selectedShipments.map(s => ({
+          id: s.id,
+          csvInvoiceNo: s.invoiceNo
+        })),
+        shippingDate,
+        freshShipments,
+        settings
+      );
+
       const batch = writeBatch(db);
       selectedShipments.forEach(shipment => {
         const newDocRef = doc(collection(db, 'shipments'));
+        const resolved = resolvedMap.get(shipment.id);
+        const finalInvoiceNo = resolved?.invoiceNo || shipment.invoiceNo;
         batch.set(newDocRef, {
           ...shipment,
           id: newDocRef.id,
+          invoiceNo: finalInvoiceNo,
           createdAt: new Date().toISOString()
         });
       });
 
       await batch.commit();
-      showToast(`全 ${selectedShipments.length} 件のインボイスを出荷履歴データベースに保存・確定しました！`, 'success');
+      showToast(`全 ${selectedShipments.length} 件のインボイスを出荷履歴データベースに保存・確定しました！（重複ゼロ通番確認済）`, 'success');
     } catch (err: any) {
       console.error('Database Save Error:', err);
       showToast(`データベース保存中にエラーが発生しました: ${err.message || 'エラー'}`, 'error');
@@ -1129,7 +1214,7 @@ export default function CsvInvoiceImporter({
             <p className="text-slate-400 text-xs mt-1.5 max-w-3xl leading-relaxed">
               CSVファイルを読み込み、<strong className="text-slate-200">A列のクリニック名</strong>と<strong className="text-slate-200">E列の製剤</strong>をデータベースから参照して一括データ化します。<br className="hidden sm:inline" />
               <span className="text-blue-400 font-medium">B列（受取人名）は無視してDBの医師名を採用</span>、
-              <span className="text-indigo-400 font-medium">C列（番号）は無視してシステム自動採番</span>を行い、一式でインボイスPDFを一括出力します。
+              <span className="text-indigo-400 font-medium">C列にインボイス番号がある場合はその番号を反映（空欄時は自動採番）</span>を行い、一式でインボイスPDFを一括出力します。
             </p>
           </div>
 
@@ -1229,9 +1314,21 @@ export default function CsvInvoiceImporter({
               <input
                 type="date"
                 value={shippingDate}
-                onChange={(e) => setShippingDate(e.target.value)}
+                onChange={(e) => handleShippingDateChange(e.target.value)}
                 className="bg-transparent text-white font-bold border-none outline-none cursor-pointer text-xs"
               />
+            </div>
+
+            {/* Daily Sequence Status Indicator */}
+            <div 
+              className="flex items-center gap-1.5 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-xs"
+              title="出荷履歴DBと連動し、同日内の重複を防止して通番を確実に継続します"
+            >
+              <Hash className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="text-slate-400">本日通番管理:</span>
+              <span className="font-mono font-bold text-emerald-400">
+                {currentDayMaxSeq > 0 ? `#${String(currentDayMaxSeq).padStart(3, '0')} 発行済（次回開始: #${String(currentDayMaxSeq + 1).padStart(3, '0')}〜）` : '未発行（#001から開始）'}
+              </span>
             </div>
 
             {/* Currency */}
@@ -1288,8 +1385,8 @@ export default function CsvInvoiceImporter({
 
               <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
                 <span className="text-[10px] font-bold text-slate-400 block">C列 (3列目)</span>
-                <p className="font-bold text-indigo-300 line-through">インボイス番号</p>
-                <p className="text-[10px] text-indigo-400 mt-1">CSV値は無視 → システム自動採番</p>
+                <p className="font-bold text-indigo-300">インボイス番号</p>
+                <p className="text-[10px] text-indigo-400 mt-1">CSV記載時はその番号を反映（空欄時は自動採番）</p>
               </div>
 
               <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
@@ -1782,15 +1879,78 @@ export default function CsvInvoiceImporter({
                         #{idx + 1}
                       </span>
 
-                      {/* Generated Invoice No */}
+                      {/* Invoice No */}
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-black text-white font-mono tracking-wider">
-                            {alloc.systemGeneratedInvoiceNo}
-                          </span>
-                          <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
-                            システム自動採番（CSVのC列「{alloc.csvIgnoredInvoiceNo || '未指定'}」は無視）
-                          </span>
+                          {editingInvoiceAllocId === alloc.id ? (
+                            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="text"
+                                value={tempInvoiceNo}
+                                onChange={(e) => setTempInvoiceNo(e.target.value)}
+                                className="bg-slate-900 border border-blue-500 rounded px-2 py-0.5 text-xs font-mono text-white focus:outline-none w-40"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleSaveInvoiceNo(alloc.id);
+                                  if (e.key === 'Escape') setEditingInvoiceAllocId(null);
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleSaveInvoiceNo(alloc.id)}
+                                className="p-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] cursor-pointer"
+                                title="保存"
+                              >
+                                <Check className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingInvoiceAllocId(null)}
+                                className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] cursor-pointer"
+                                title="キャンセル"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <span className={`text-sm font-black font-mono tracking-wider ${alloc.isInvoiceNoFromCsv ? 'text-emerald-400' : 'text-white'}`}>
+                                {alloc.systemGeneratedInvoiceNo}
+                              </span>
+                              {alloc.isCollisionAvoided ? (
+                                <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold flex items-center gap-1" title="当日中の番号重複を自動回避し、最新の通番連番を割り当てました">
+                                  <AlertCircle className="w-2.5 h-2.5 text-amber-400" />
+                                  重複自動回避（通番 #{String(alloc.sequenceNumber || 1).padStart(3, '0')}）
+                                </span>
+                              ) : alloc.isInvoiceNoFromCsv ? (
+                                <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1">
+                                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
+                                  CSVインボイス番号反映
+                                </span>
+                              ) : (
+                                <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
+                                  当日通番連番（#{String(alloc.sequenceNumber || 1).padStart(3, '0')}）
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingInvoiceAllocId(alloc.id);
+                                  setTempInvoiceNo(alloc.systemGeneratedInvoiceNo);
+                                }}
+                                className="p-1 text-slate-500 hover:text-slate-200 transition-colors cursor-pointer rounded hover:bg-slate-800"
+                                title="インボイス番号を直接編集"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                              </button>
+                            </>
+                          )}
+                          {alloc.trackingNo && (
+                            <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono hidden sm:inline-block">
+                              追跡: {alloc.trackingNo}
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs font-bold text-slate-200 mt-0.5 flex flex-wrap items-center gap-1.5">
                           <span>{alloc.clinicNameCsv}</span>
@@ -2499,6 +2659,21 @@ export default function CsvInvoiceImporter({
                     onChange={(e) => setManualForm({ ...manualForm, corporationName: e.target.value })}
                     placeholder="例: 医療法人社団○○会"
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-white placeholder:text-slate-600 outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                {/* Invoice Number */}
+                <div className="md:col-span-2">
+                  <label className="block text-slate-300 text-[11px] font-bold mb-1 flex items-center justify-between">
+                    <span>インボイス番号（Invoice No）</span>
+                    <span className="text-[10px] text-slate-400 font-normal">※CSV記載値または自動採番値を反映・変更可能</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={manualForm.invoiceNo}
+                    onChange={(e) => setManualForm({ ...manualForm, invoiceNo: e.target.value })}
+                    placeholder="例: 260901-1 や INV-260920-001"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-white placeholder:text-slate-600 outline-none focus:border-blue-500 font-mono text-xs"
                   />
                 </div>
               </div>

@@ -1,5 +1,6 @@
 import { Clinic, Product, Shipment, ShipmentItem, Warehouse, SystemSettings } from '../types';
 import { SAMPLE_CLINICS_MASTER } from '../data/sampleClinicProductData';
+import { resolveBatchInvoiceNumbers, formatStandardInvoiceNo } from './invoiceSequence';
 
 export interface ParsedCsvRow {
   rawRowIndex: number;
@@ -74,9 +75,13 @@ export interface ParsedClinicAllocation {
   doctorNameJaFromDb: string;
   csvIgnoredRecipient: string;
   
-  // Invoice No: strictly system-generated as user instructed
+  // Invoice No: reflected from CSV if present, or system-generated if absent
   systemGeneratedInvoiceNo: string;
   csvIgnoredInvoiceNo: string;
+  isInvoiceNoFromCsv?: boolean;
+  isCollisionAvoided?: boolean;
+  sequenceNumber?: number;
+  trackingNo?: string;
 
   // Validation alert details for required invoice fields
   clinicValidation: ClinicDataValidation;
@@ -368,7 +373,9 @@ export function parseShippingCsv(
   columnMappingOverride?: {
     productCol?: number;
     qtyCol?: number;
-  }
+  },
+  existingShipments?: Shipment[],
+  targetShippingDate?: string
 ): CsvParseResult {
   const rawRows = parseCsvText(csvText);
   const warnings: string[] = [];
@@ -395,6 +402,7 @@ export function parseShippingCsv(
   let invoiceCol = 2;
   let productCol = 3;
   let qtyCol = 4;
+  let trackingCol = -1;
 
   let startRowIdx = 0;
 
@@ -404,7 +412,7 @@ export function parseShippingCsv(
     const rowStr = row.join(' ').toLowerCase();
 
     // Check if this row is a header row
-    if (rowStr.includes('company name') || rowStr.includes('クリニック') || rowStr.includes('recipient') || rowStr.includes('packaging items') || rowStr.includes('quantity')) {
+    if (rowStr.includes('company name') || rowStr.includes('クリニック') || rowStr.includes('recipient') || rowStr.includes('packaging items') || rowStr.includes('quantity') || rowStr.includes('invoice')) {
       startRowIdx = r + 1;
 
       // Identify columns from header
@@ -414,12 +422,14 @@ export function parseShippingCsv(
           clinicCol = idx;
         } else if (cLower.includes('recipient') || cLower.includes('受取') || cLower.includes('宛名') || cLower.includes('医師')) {
           recipientCol = idx;
-        } else if (cLower.includes('invoice number') || cLower.includes('invoice') || cLower.includes('インボイス番号')) {
+        } else if (cLower.includes('invoice number') || cLower.includes('invoice no') || cLower.includes('invoice') || cLower.includes('インボイス番号') || cLower.includes('インボイス') || cLower.includes('請求番号') || cLower.includes('inv no') || cLower.includes('inv#')) {
           invoiceCol = idx;
         } else if (cLower.includes('packaging items') || cLower.includes('product') || cLower.includes('品名') || cLower.includes('製剤') || cLower.includes('商品')) {
           productCol = idx;
         } else if (cLower.includes('quantity') || cLower.includes('qty') || cLower.includes('個数') || cLower.includes('数量')) {
           qtyCol = idx;
+        } else if (cLower.includes('tracking number') || cLower.includes('tracking no') || cLower.includes('tracking') || cLower.includes('追跡番号') || cLower.includes('送り状') || cLower.includes('問合せ番号') || cLower.includes('お問合せ番号')) {
+          trackingCol = idx;
         }
       });
       break;
@@ -444,7 +454,8 @@ export function parseShippingCsv(
 
     const colAVal = (row[clinicCol] || '').trim();
     const colBVal = (row[recipientCol] || '').trim();
-    const colCVal = (row[invoiceCol] || '').trim();
+    const colCVal = invoiceCol >= 0 && invoiceCol < row.length ? (row[invoiceCol] || '').trim() : '';
+    const colTrackingVal = trackingCol >= 0 && trackingCol < row.length ? (row[trackingCol] || '').trim() : '';
     const colProductVal = (row[productCol] || '').trim();
     const colQtyStr = (row[qtyCol] || '').trim();
 
@@ -460,9 +471,12 @@ export function parseShippingCsv(
       const clinicObj = matched.clinic;
       const clinicValidation = validateClinicInvoiceCompleteness(clinicObj);
 
-      // Rule: System generates the invoice number (CSV Column C is ignored)
+      // Rule: If CSV contains an invoice number, reflect it directly!
+      // Otherwise, fallback to system-generated format.
       const paddedNum = String(clinicCounter).padStart(3, '0');
-      const generatedInvoiceNo = `${basePrefix}${dateStr}-${paddedNum}`;
+      const defaultGeneratedInvoiceNo = `${basePrefix}${dateStr}-${paddedNum}`;
+      const hasCsvInvoiceNo = Boolean(colCVal && colCVal.trim() !== '');
+      const effectiveInvoiceNo = hasCsvInvoiceNo ? colCVal.trim() : defaultGeneratedInvoiceNo;
 
       // Rule: Recipient is pulled strictly from DB (CSV Column B is ignored, strictly WITHOUT "Dr." prefix)
       const rawDocEn = clinicObj?.doctorNameEn || '';
@@ -478,8 +492,10 @@ export function parseShippingCsv(
         doctorNameEnFromDb: docEn,
         doctorNameJaFromDb: docJa,
         csvIgnoredRecipient: colBVal,
-        systemGeneratedInvoiceNo: generatedInvoiceNo,
+        systemGeneratedInvoiceNo: effectiveInvoiceNo,
         csvIgnoredInvoiceNo: colCVal,
+        isInvoiceNoFromCsv: hasCsvInvoiceNo,
+        trackingNo: colTrackingVal,
         clinicValidation,
         items: [],
         totalQty: 0,
@@ -500,6 +516,17 @@ export function parseShippingCsv(
       }
 
       allocations.push(currentAlloc);
+    } else if (currentAlloc) {
+      // Continuation row for the same clinic:
+      // If previous row had no invoice number and this row does, capture it!
+      if (!currentAlloc.isInvoiceNoFromCsv && colCVal) {
+        currentAlloc.systemGeneratedInvoiceNo = colCVal;
+        currentAlloc.csvIgnoredInvoiceNo = colCVal;
+        currentAlloc.isInvoiceNoFromCsv = true;
+      }
+      if (!currentAlloc.trackingNo && colTrackingVal) {
+        currentAlloc.trackingNo = colTrackingVal;
+      }
     }
 
     // Process Product Item (either on the clinic row or continuation rows)
@@ -566,6 +593,32 @@ export function parseShippingCsv(
   let incompleteClinicsCount = 0;
   let unmatchedProductsCount = 0;
 
+  // Resequence and resolve invoice numbers with zero collision guarantee for the target date
+  const effectiveDate = targetShippingDate || new Date().toISOString().substring(0, 10);
+  const resolvedMap = resolveBatchInvoiceNumbers(
+    allocations.map(a => ({
+      id: a.id,
+      csvInvoiceNo: a.csvIgnoredInvoiceNo || (a.isInvoiceNoFromCsv ? a.systemGeneratedInvoiceNo : undefined),
+      existingInvoiceNo: a.systemGeneratedInvoiceNo
+    })),
+    effectiveDate,
+    existingShipments || [],
+    settings
+  );
+
+  allocations.forEach(a => {
+    const res = resolvedMap.get(a.id);
+    if (res) {
+      a.systemGeneratedInvoiceNo = res.invoiceNo;
+      a.isInvoiceNoFromCsv = res.isFromCsv;
+      a.isCollisionAvoided = res.isCollisionAvoided;
+      a.sequenceNumber = res.sequenceNumber;
+      if (res.isCollisionAvoided) {
+        a.warnings.push(`本日（${effectiveDate}）のインボイス通番重複を自動回避し、最新連番（#${String(res.sequenceNumber).padStart(3, '0')}）を割り当てました。`);
+      }
+    }
+  });
+
   allocations.forEach(alloc => {
     totalItemsCount += alloc.items.length;
     totalQuantity += alloc.totalQty;
@@ -594,6 +647,48 @@ export function parseShippingCsv(
 }
 
 /**
+ * Re-sequences allocations for a new target shipping date, ensuring sequential numbering
+ * and preventing any collision with existing shipments in the database.
+ */
+export function resequenceAllocationsForDate(
+  allocations: ParsedClinicAllocation[],
+  targetShippingDate: string,
+  existingShipments: Shipment[] = [],
+  settings?: SystemSettings
+): ParsedClinicAllocation[] {
+  const resolvedMap = resolveBatchInvoiceNumbers(
+    allocations.map(a => ({
+      id: a.id,
+      csvInvoiceNo: a.csvIgnoredInvoiceNo || (a.isInvoiceNoFromCsv && !a.isCollisionAvoided ? a.systemGeneratedInvoiceNo : undefined),
+      existingInvoiceNo: a.systemGeneratedInvoiceNo
+    })),
+    targetShippingDate,
+    existingShipments,
+    settings
+  );
+
+  return allocations.map(a => {
+    const res = resolvedMap.get(a.id);
+    if (!res) return a;
+    
+    // Clean previous collision warning if any
+    const cleanWarnings = a.warnings.filter(w => !w.includes('インボイス通番重複を自動回避'));
+    if (res.isCollisionAvoided) {
+      cleanWarnings.push(`本日（${targetShippingDate}）のインボイス通番重複を自動回避し、最新連番（#${String(res.sequenceNumber).padStart(3, '0')}）を割り当てました。`);
+    }
+
+    return {
+      ...a,
+      systemGeneratedInvoiceNo: res.invoiceNo,
+      isInvoiceNoFromCsv: res.isFromCsv,
+      isCollisionAvoided: res.isCollisionAvoided,
+      sequenceNumber: res.sequenceNumber,
+      warnings: cleanWarnings
+    };
+  });
+}
+
+/**
  * Convert parsed allocations into complete Shipment records ready for PDF generation & Firestore saving
  */
 export function convertAllocationsToShipments(
@@ -608,6 +703,7 @@ export function convertAllocationsToShipments(
   return allocations.map(alloc => {
     const clinicSnapshot: Partial<Clinic> = alloc.matchedClinic ? {
       ...alloc.matchedClinic,
+      sequenceNo: alloc.matchedClinic.sequenceNo !== undefined ? alloc.matchedClinic.sequenceNo : alloc.sequenceNumber,
       name: alloc.matchedClinic.name || alloc.clinicNameCsv,
       nameEn: alloc.matchedClinic.nameEn || '',
       doctorName: alloc.doctorNameJaFromDb || alloc.matchedClinic.doctorName || '',
@@ -615,6 +711,7 @@ export function convertAllocationsToShipments(
       phone: alloc.matchedClinic.phone || '',
       addressEn: alloc.matchedClinic.addressEn || '',
     } : {
+      sequenceNo: alloc.sequenceNumber,
       name: alloc.clinicNameCsv,
       nameEn: '',
       doctorName: alloc.doctorNameJaFromDb || '',
@@ -654,7 +751,7 @@ export function convertAllocationsToShipments(
       clinicSnapshot,
       currency,
       courier: 'EMS / DHL Express',
-      trackingNo: '',
+      trackingNo: alloc.trackingNo || '',
       shippingCost: 0,
       insurance: 0,
       otherCharges: 0,
