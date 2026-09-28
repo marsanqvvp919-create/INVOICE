@@ -231,6 +231,9 @@ export default function CsvInvoiceImporter({
   const [showConfigAccordion, setShowConfigAccordion] = useState<boolean>(false);
   const [productColOverride, setProductColOverride] = useState<number | undefined>(undefined);
   const [qtyColOverride, setQtyColOverride] = useState<number | undefined>(undefined);
+  const [customInvoicePrefix, setCustomInvoicePrefix] = useState<string>(settings?.prefix || 'INV-');
+  const [customStartSeq, setCustomStartSeq] = useState<number>(1);
+  const [useCustomInvoiceRules, setUseCustomInvoiceRules] = useState<boolean>(false);
 
   // Analysis / Parsed Result State
   const [parseResult, setParseResult] = useState<CsvParseResult | null>(null);
@@ -356,7 +359,9 @@ export default function CsvInvoiceImporter({
         parseResult.allocations,
         newDate,
         shipments,
-        settings
+        settings,
+        useCustomInvoiceRules ? customInvoicePrefix : undefined,
+        useCustomInvoiceRules ? customStartSeq : undefined
       );
       setParseResult({
         ...parseResult,
@@ -384,7 +389,9 @@ export default function CsvInvoiceImporter({
       strippedAllocations,
       shippingDate,
       shipments,
-      settings
+      settings,
+      useCustomInvoiceRules ? customInvoicePrefix : undefined,
+      useCustomInvoiceRules ? customStartSeq : undefined
     );
 
     setParseResult({
@@ -392,9 +399,29 @@ export default function CsvInvoiceImporter({
       allocations: resequenced
     });
 
-    const prefix = settings?.prefix || 'INV-';
+    const prefix = useCustomInvoiceRules ? customInvoicePrefix : (settings?.prefix || 'INV-');
     const datePart = shippingDate.replace(/-/g, '');
-    showToast(`全${resequenced.length}件のインボイス番号を本日の自動連番（${prefix}${datePart}-001〜）で統一再採番しました。`, 'success');
+    showToast(`全${resequenced.length}件のインボイス番号を自動連番（${prefix}${datePart}〜）で統一再採番しました。`, 'success');
+  };
+
+  const handleApplyCustomInvoiceRules = () => {
+    if (!parseResult || parseResult.allocations.length === 0) {
+      showToast('適用する解析済みデータがありません。', 'error');
+      return;
+    }
+    const resequenced = resequenceAllocationsForDate(
+      parseResult.allocations,
+      shippingDate,
+      shipments,
+      settings,
+      useCustomInvoiceRules ? customInvoicePrefix : undefined,
+      useCustomInvoiceRules ? customStartSeq : undefined
+    );
+    setParseResult({
+      ...parseResult,
+      allocations: resequenced
+    });
+    showToast(`インボイス番号のカスタム設定（プレフィックス: ${customInvoicePrefix}, 開始連番: ${customStartSeq}）を適用して再採番しました。`, 'success');
   };
 
   // Execute parsing when csvText or options change
@@ -416,7 +443,9 @@ export default function CsvInvoiceImporter({
           qtyCol: qtyColOverride
         },
         shipments,
-        targetDate
+        targetDate,
+        useCustomInvoiceRules ? customInvoicePrefix : undefined,
+        useCustomInvoiceRules ? customStartSeq : undefined
       );
 
       setParseResult(result);
@@ -427,7 +456,7 @@ export default function CsvInvoiceImporter({
       if (result.allocations.length === 0) {
         showToast('有効な出荷データが見つかりませんでした。ヘッダーや形式をご確認ください。', 'error');
       } else {
-        showToast(`CSVを正常に解析しました（クリニック: ${result.totalClinics}件、製剤品目: ${result.totalItemsCount}行、インボイス通番自動割り当て済）。`, 'success');
+        showToast(`CSVを正常に解析しました（クリニック: ${result.totalClinics}件、製剤品目: ${result.totalItemsCount}行、インボイス番号自動割当済）。`, 'success');
       }
     } catch (err: any) {
       console.error('CSV Parsing Error:', err);
@@ -1497,10 +1526,67 @@ export default function CsvInvoiceImporter({
           </div>
         </div>
 
-        {/* Collapsible Column Specification Info */}
+        {/* Collapsible Column Specification Info & Custom Invoice Settings */}
         {showConfigAccordion && (
-          <div className="mb-4 p-4 rounded-xl bg-slate-950/80 border border-slate-800 text-xs space-y-3">
-            <div className="flex items-center justify-between">
+          <div className="mb-4 p-4 rounded-xl bg-slate-950/80 border border-slate-800 text-xs space-y-4">
+            {/* Custom Invoice Numbering Settings Panel */}
+            <div className="p-3.5 rounded-lg bg-slate-900 border border-slate-700/80 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-white flex items-center gap-1.5">
+                  <Hash className="w-4 h-4 text-indigo-400" />
+                  インボイス番号のプレフィックス・開始連番のカスタム指定（管理画面制御）
+                </span>
+                <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={useCustomInvoiceRules}
+                    onChange={(e) => setUseCustomInvoiceRules(e.target.checked)}
+                    className="w-4 h-4 rounded bg-slate-950 border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span>カスタム設定を有効にする</span>
+                </label>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                CSV読込時に自動採番されるインボイス番号のプレフィックス文字列（例: <code className="text-indigo-300">INV-</code> や <code className="text-indigo-300">EXP-</code> 等）や開始番号を管理画面上から自由に変更・指定できます。
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end pt-1">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 mb-1">インボイスプレフィックス</label>
+                  <input
+                    type="text"
+                    value={customInvoicePrefix}
+                    onChange={(e) => setCustomInvoicePrefix(e.target.value)}
+                    disabled={!useCustomInvoiceRules}
+                    placeholder="例: INV-, EXP-, 2026-"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 mb-1">開始連番番号 (Start Seq)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={customStartSeq}
+                    onChange={(e) => setCustomStartSeq(parseInt(e.target.value, 10) || 1)}
+                    disabled={!useCustomInvoiceRules}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                  />
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    onClick={handleApplyCustomInvoiceRules}
+                    disabled={!useCustomInvoiceRules}
+                    className="w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>設定で一括再採番</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-1">
               <span className="font-bold text-slate-300 flex items-center gap-1.5">
                 <HelpCircle className="w-3.5 h-3.5 text-blue-400" />
                 CSV列マッピングルール仕様

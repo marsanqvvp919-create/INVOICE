@@ -375,7 +375,9 @@ export function parseShippingCsv(
     qtyCol?: number;
   },
   existingShipments?: Shipment[],
-  targetShippingDate?: string
+  targetShippingDate?: string,
+  customInvoicePrefix?: string,
+  customStartSeq?: number
 ): CsvParseResult {
   const rawRows = parseCsvText(csvText);
   const warnings: string[] = [];
@@ -482,7 +484,7 @@ export function parseShippingCsv(
   let clinicCounter = 0;
 
   const dateStr = (new Date()).toISOString().slice(2, 10).replace(/-/g, ''); // YYMMDD
-  const basePrefix = settings?.prefix || 'INV-';
+  const basePrefix = customInvoicePrefix !== undefined ? customInvoicePrefix : (settings?.prefix || 'INV-');
 
   for (let r = startRowIdx; r < rawRows.length; r++) {
     const row = rawRows[r];
@@ -647,7 +649,10 @@ export function parseShippingCsv(
     })),
     effectiveDate,
     existingShipments || [],
-    settings
+    settings,
+    true,
+    customInvoicePrefix,
+    customStartSeq
   );
 
   allocations.forEach(a => {
@@ -698,7 +703,9 @@ export function resequenceAllocationsForDate(
   allocations: ParsedClinicAllocation[],
   targetShippingDate: string,
   existingShipments: Shipment[] = [],
-  settings?: SystemSettings
+  settings?: SystemSettings,
+  customInvoicePrefix?: string,
+  customStartSeq?: number
 ): ParsedClinicAllocation[] {
   const resolvedMap = resolveBatchInvoiceNumbers(
     allocations.map(a => ({
@@ -708,7 +715,10 @@ export function resequenceAllocationsForDate(
     })),
     targetShippingDate,
     existingShipments,
-    settings
+    settings,
+    true,
+    customInvoicePrefix,
+    customStartSeq
   );
 
   return allocations.map(a => {

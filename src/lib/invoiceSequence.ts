@@ -160,9 +160,11 @@ export function resolveBatchInvoiceNumbers(
   targetDateStr: string,
   existingShipments: Shipment[] = [],
   settings?: SystemSettings,
-  includeCache: boolean = true
+  includeCache: boolean = true,
+  customPrefix?: string,
+  customStartSeq?: number
 ): Map<string, ResolvedInvoiceAllocation> {
-  const prefix = settings?.prefix || 'INV-';
+  const prefix = customPrefix !== undefined ? customPrefix : (settings?.prefix || 'INV-');
   const clean8 = targetDateStr.replace(/-/g, '');
   const clean6 = clean8.slice(2);
 
@@ -183,8 +185,10 @@ export function resolveBatchInvoiceNumbers(
     });
   }
 
-  // Calculate the starting sequence number for this date from existing database records + cache
-  let nextSeq = getMaxSequenceForDate(targetDateStr, existingShipments, includeCache) + 1;
+  // Calculate the starting sequence number for this date from existing database records + cache (or customStartSeq override)
+  let nextSeq = (customStartSeq !== undefined && customStartSeq > 0)
+    ? customStartSeq
+    : (getMaxSequenceForDate(targetDateStr, existingShipments, includeCache) + 1);
 
   const results = new Map<string, ResolvedInvoiceAllocation>();
 
