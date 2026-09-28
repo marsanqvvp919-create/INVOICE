@@ -6,7 +6,8 @@ import {
   Trash2, 
   X, 
   Warehouse as WarehouseIcon,
-  CheckCircle2
+  CheckCircle2,
+  Loader2
 } from 'lucide-react';
 import { Warehouse, SystemSettings } from '../types';
 
@@ -30,6 +31,12 @@ export default function WarehouseMaster({
   const [searchQuery, setSearchQuery] = useState('');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingWarehouse, setEditingWarehouse] = useState<Warehouse | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
 
   // Form Fields State
   const [formFields, setFormFields] = useState({
@@ -117,25 +124,34 @@ export default function WarehouseMaster({
     try {
       if (editingWarehouse) {
         await onUpdateWarehouse(editingWarehouse.id, formFields);
+        showToast(`倉庫「${formFields.name}」を更新しました。`, 'success');
       } else {
         await onAddWarehouse(formFields);
+        showToast(`新規倉庫「${formFields.name}」を登録しました。`, 'success');
       }
       setIsFormOpen(false);
       resetForm();
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert('保存中にエラーが発生しました。');
+      showToast(`保存中にエラーが発生しました: ${err.message || 'エラー'}`, 'error');
     }
   };
 
-  const handleDelete = async (id: string, name: string) => {
-    if (window.confirm(`本当に「${name}」を削除しますか？`)) {
-      try {
-        await onDeleteWarehouse(id);
-      } catch (err) {
-        console.error(err);
-        alert('削除中にエラーが発生しました。');
-      }
+  const [warehouseToDelete, setWarehouseToDelete] = useState<Warehouse | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+
+  const handleExecuteDelete = async () => {
+    if (!warehouseToDelete) return;
+    setIsDeleting(true);
+    try {
+      await onDeleteWarehouse(warehouseToDelete.id);
+      showToast(`倉庫「${warehouseToDelete.name}」を削除しました。`, 'success');
+      setWarehouseToDelete(null);
+    } catch (err: any) {
+      console.error(err);
+      showToast(`削除中にエラーが発生しました: ${err.message || 'エラー'}`, 'error');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -143,10 +159,10 @@ export default function WarehouseMaster({
     if (warehouse.isDefault) return;
     try {
       await onUpdateWarehouse(warehouse.id, { isDefault: true });
-      alert(`「${warehouse.name}」をデフォルト発送元倉庫に設定しました。`);
-    } catch (err) {
+      showToast(`「${warehouse.name}」をデフォルト発送元倉庫に設定しました。`, 'success');
+    } catch (err: any) {
       console.error(err);
-      alert('デフォルト設定の更新に失敗しました。');
+      showToast('デフォルト設定の更新に失敗しました。', 'error');
     }
   };
 
@@ -162,6 +178,22 @@ export default function WarehouseMaster({
 
   return (
     <div className="space-y-6">
+      {/* Toast Notification Banner */}
+      {toast && (
+        <div className={`p-4 rounded-xl border flex items-center justify-between gap-3 text-xs shadow-sm animate-in fade-in duration-200 ${
+          toast.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-900' :
+          toast.type === 'error' ? 'bg-red-50 border-red-200 text-red-900' :
+          'bg-blue-50 border-blue-200 text-blue-900'
+        }`}>
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span className="font-bold">{toast.message}</span>
+          </div>
+          <button onClick={() => setToast(null)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
       {/* Header and top buttons */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -241,7 +273,8 @@ export default function WarehouseMaster({
                     <Edit2 className="w-3.5 h-3.5" />
                   </button>
                   <button
-                    onClick={() => handleDelete(w.id, w.name)}
+                    type="button"
+                    onClick={() => setWarehouseToDelete(w)}
                     className="bg-white hover:bg-red-50 text-red-600 p-1.5 rounded border border-slate-200 hover:border-red-200 transition-colors cursor-pointer"
                     title="削除"
                   >
@@ -285,6 +318,68 @@ export default function WarehouseMaster({
         })
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {warehouseToDelete && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-6 py-4 border-b border-rose-100 flex items-center justify-between bg-rose-50/50">
+              <h3 className="text-sm font-bold text-rose-900 flex items-center gap-2">
+                <Trash2 className="w-4 h-4 text-rose-600" />
+                <span>発送元倉庫の削除確認</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isDeleting) setWarehouseToDelete(null);
+                }}
+                disabled={isDeleting}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4 text-xs text-slate-700">
+              <p className="font-medium">
+                本当に以下の発送元倉庫を削除しますか？この操作は元に戻せません。
+              </p>
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-1">
+                <p className="font-bold text-slate-900 text-sm">{warehouseToDelete.name}</p>
+                <p className="text-slate-500 font-mono text-[11px]">{warehouseToDelete.nameEn}</p>
+                <p className="text-slate-400 font-mono text-[10px]">ID: {warehouseToDelete.warehouseId || (warehouseToDelete as any).code}</p>
+              </div>
+            </div>
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setWarehouseToDelete(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteDelete}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm shadow-rose-600/20 disabled:opacity-60"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>削除中...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>完全に削除する</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Form Dialog Modal */}
       {isFormOpen && (
