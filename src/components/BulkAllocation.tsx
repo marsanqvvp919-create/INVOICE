@@ -22,7 +22,8 @@ import {
   Package,
   Minus,
   FileSpreadsheet,
-  ArrowRight
+  ArrowRight,
+  Hash
 } from 'lucide-react';
 import { 
   collection, 
@@ -52,7 +53,7 @@ interface BulkAllocationProps {
   lots: InventoryLot[];
   currentUser: User;
   settings: SystemSettings;
-  onSubmitBulkShipments: (shipments: any[]) => Promise<Shipment[]>;
+  onSubmitBulkShipments: (shipments: any[], customPrefix?: string, customStartSeq?: number) => Promise<Shipment[]>;
   onSwitchToCsvInvoice?: () => void;
 }
 
@@ -102,6 +103,11 @@ export default function BulkAllocation({
   const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
   const [currency, setCurrency] = useState<'USD' | 'KRW' | 'JPY' | 'EUR'>('JPY');
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
+
+  // Invoice Number Customization States
+  const [customInvoicePrefix, setCustomInvoicePrefix] = useState<string>(settings?.prefix || 'INV-');
+  const [customStartSeq, setCustomStartSeq] = useState<number>(1);
+  const [useCustomInvoiceRules, setUseCustomInvoiceRules] = useState<boolean>(false);
 
   // Sync default warehouse if warehouses/settings load or change asynchronously
   useEffect(() => {
@@ -626,7 +632,11 @@ export default function BulkAllocation({
         };
       });
 
-      const createdShipments = await onSubmitBulkShipments(shipmentsPayloads);
+      const createdShipments = await onSubmitBulkShipments(
+        shipmentsPayloads,
+        useCustomInvoiceRules ? customInvoicePrefix : undefined,
+        useCustomInvoiceRules ? customStartSeq : undefined
+      );
       
       const zipBlob = await generateShipmentsZip(createdShipments, settings);
       const fileName = `INVOICES_BATCH_${new Date().toISOString().substring(0,10)}.zip`;
@@ -921,6 +931,56 @@ export default function BulkAllocation({
             {savingDraft ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
             <span>{activeDraftId ? '下書き更新保存' : '下書き保存'}</span>
           </button>
+        </div>
+      </div>
+
+      {/* Invoice Number Customization Settings Panel */}
+      <div className="bg-white p-5 rounded-xl border border-indigo-200/80 shadow-sm space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 bg-indigo-100 text-indigo-700 rounded-lg">
+              <Hash className="w-4 h-4" />
+            </div>
+            <h3 className="text-xs font-bold text-indigo-950 uppercase tracking-wide">
+              インボイス番号のプレフィックス・開始連番カスタム設定
+            </h3>
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700">
+            <input
+              type="checkbox"
+              checked={useCustomInvoiceRules}
+              onChange={(e) => setUseCustomInvoiceRules(e.target.checked)}
+              className="w-4 h-4 rounded bg-slate-50 border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+            />
+            <span>カスタム設定を有効にする</span>
+          </label>
+        </div>
+        <p className="text-[11px] text-slate-500 leading-relaxed">
+          一括分配・作成時に自動採番されるインボイス番号のプレフィックス文字列（例: <code className="text-indigo-600 font-bold">INV-</code>, <code className="text-indigo-600 font-bold">EXP-</code> 等）や開始連番を管理画面上から事前に指定できます。
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          <div>
+            <label className="block text-[11px] font-bold text-slate-700 mb-1">インボイスプレフィックス</label>
+            <input
+              type="text"
+              value={customInvoicePrefix}
+              onChange={(e) => setCustomInvoicePrefix(e.target.value)}
+              disabled={!useCustomInvoiceRules}
+              placeholder="例: INV-, EXP-, BATCH-"
+              className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-blue-500 disabled:opacity-50"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-bold text-slate-700 mb-1">開始連番番号 (Start Seq)</label>
+            <input
+              type="number"
+              min="1"
+              value={customStartSeq}
+              onChange={(e) => setCustomStartSeq(parseInt(e.target.value, 10) || 1)}
+              disabled={!useCustomInvoiceRules}
+              className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-blue-500 disabled:opacity-50"
+            />
+          </div>
         </div>
       </div>
 

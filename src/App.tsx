@@ -505,7 +505,11 @@ export default function App() {
   };
 
   // 5. Submit Bulk Shipment (Multiple Clinics in One Batch - Invoice Generator)
-  const handleBulkShipmentsSubmit = async (shipmentsPayloads: any[]): Promise<Shipment[]> => {
+  const handleBulkShipmentsSubmit = async (
+    shipmentsPayloads: any[], 
+    customPrefix?: string, 
+    customStartSeq?: number
+  ): Promise<Shipment[]> => {
     const createdList: Shipment[] = [];
     
     // Fetch all shipments once to count existing ones and avoid race conditions / stale cache
@@ -522,14 +526,15 @@ export default function App() {
     for (const payload of shipmentsPayloads) {
       const dateStr = payload.date;
       if (dateCounts[dateStr] === undefined) {
-        // Count how many exist in DB for this date using robust sequence calculator
+        // Count how many exist in DB for this date using robust sequence calculator (or customStartSeq override)
         const maxSeq = getMaxSequenceForDate(dateStr, allExistingShipments);
-        dateCounts[dateStr] = maxSeq + 1;
+        const baseSeq = (customStartSeq !== undefined && customStartSeq > 0) ? customStartSeq : (maxSeq + 1);
+        dateCounts[dateStr] = baseSeq;
       } else {
         dateCounts[dateStr] += 1;
       }
 
-      const prefix = settings.prefix || 'INV-';
+      const prefix = customPrefix !== undefined ? customPrefix : (settings.prefix || 'INV-');
       const candidateNo = payload.invoiceNo && String(payload.invoiceNo).trim();
       const isAlreadyUsed = candidateNo && usedInvoiceNosInBatch.has(candidateNo.toLowerCase());
 
