@@ -1399,23 +1399,33 @@ export default function App() {
   };
 
   const handleDeleteWarehouse = async (id: string) => {
-    const docRef = doc(db, 'warehouses', id);
-    await deleteDoc(docRef);
+    try {
+      const docRef = doc(db, 'warehouses', id);
+      await deleteDoc(docRef);
+    } catch (e) {
+      console.warn("Delete warehouse doc warning:", e);
+    }
+
+    setWarehouses(prev => prev.filter(w => w.id !== id));
 
     if (settings.defaultWarehouseId === id) {
       const remaining = warehouses.filter(w => w.id !== id);
       if (remaining.length > 0) {
         const nextDefault = remaining[0];
-        await updateDoc(doc(db, 'warehouses', nextDefault.id), { isDefault: true });
-        await setDoc(doc(db, 'systemSettings', 'default'), { defaultWarehouseId: nextDefault.id }, { merge: true });
+        try {
+          await updateDoc(doc(db, 'warehouses', nextDefault.id), { isDefault: true });
+          await setDoc(doc(db, 'systemSettings', 'default'), { defaultWarehouseId: nextDefault.id }, { merge: true });
+        } catch (e) {}
         setSettings(prev => ({ ...prev, defaultWarehouseId: nextDefault.id }));
       } else {
-        await setDoc(doc(db, 'systemSettings', 'default'), { defaultWarehouseId: '' }, { merge: true });
+        try {
+          await setDoc(doc(db, 'systemSettings', 'default'), { defaultWarehouseId: '' }, { merge: true });
+        } catch (e) {}
         setSettings(prev => ({ ...prev, defaultWarehouseId: '' }));
       }
     }
 
-    await logAuditAction('WAREHOUSE_DELETE', id, 'Exist', 'Deleted warehouse');
+    await logAuditAction('WAREHOUSE_DELETE', id, 'Exist', 'Deleted warehouse').catch(() => {});
   };
 
   // UI Loading State

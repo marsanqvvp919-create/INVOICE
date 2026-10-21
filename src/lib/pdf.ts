@@ -343,10 +343,8 @@ function drawParties(doc: jsPDF, shipment: Shipment, startY: number): number {
   }
   drawLabelValue(colLeftX + 4, shipperY, 'Tel: ', shipperPhone);
   shipperY += 4.8;
-  if (shipper.email && shipper.email !== 'gangnam@logistics.com') {
-    drawLabelValue(colLeftX + 4, shipperY, 'Email: ', shipper.email);
-    shipperY += 4.8;
-  }
+  drawLabelValue(colLeftX + 4, shipperY, 'Email: ', 'import@no1.farm');
+  shipperY += 4.8;
 
   // Consignee details (Only: Clinic Name, English Address, Doctor Name English without "Dr.", Phone number)
   const clinicEn = getEnglishClinicDetails(consignee);
