@@ -38,6 +38,9 @@ export interface Clinic {
   notes: string;
   active: boolean;
   createdAt: string;
+  rakurakuClinicId?: string; // 楽楽販売の顧客マスタのクリニックID
+  rakurakuPending?: boolean; // 画面で編集して楽楽販売へまだ送っていない（毎日の取り込みで上書きしない）
+  rakurakuSyncedAt?: string; // 最後に楽楽販売と同期した日時
 }
 
 export interface Product {

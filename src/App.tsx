@@ -678,6 +678,7 @@ export default function App() {
     await addDoc(collection(db, 'clinics'), {
       ...clinic,
       sequenceNo: nextSeq,
+      rakurakuPending: true,
       createdAt: new Date().toISOString()
     });
     await logAuditAction('CLINIC_ADD', clinic.name, 'None', JSON.stringify({ ...clinic, sequenceNo: nextSeq }));
@@ -706,7 +707,7 @@ export default function App() {
 
   const handleUpdateClinic = async (id: string, updated: Partial<Clinic>) => {
     const docRef = doc(db, 'clinics', id);
-    await updateDoc(docRef, updated);
+    await updateDoc(docRef, { ...updated, rakurakuPending: true });
     await logAuditAction('CLINIC_UPDATE', id, 'Modified fields', JSON.stringify(updated));
   };
 

@@ -899,6 +899,21 @@ export default function ClinicMaster({
                         }`}>
                           {c.active ? '有効' : '無効'}
                         </span>
+                        <div className="mt-1">
+                          {c.rakurakuPending ? (
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-100" title="編集した内容を楽楽販売へまだ送っていません。送るのは納期管理のインボイス → クリニック画面から">
+                              楽楽 未送信
+                            </span>
+                          ) : c.rakurakuClinicId ? (
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-100" title={c.rakurakuSyncedAt ? `最終同期 ${c.rakurakuSyncedAt.slice(0, 16).replace('T', ' ')}` : undefined}>
+                              楽楽 {c.rakurakuClinicId}
+                            </span>
+                          ) : (
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200">
+                              楽楽 未連携
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-5 py-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
