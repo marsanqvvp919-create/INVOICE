@@ -711,35 +711,6 @@ export default function App() {
     await logAuditAction('CLINIC_UPDATE', id, 'Modified fields', JSON.stringify(updated));
   };
 
-  // 楽楽販売の顧客マスタへ1件書き込む（無ければ新規登録してクリニックIDを保存）
-  const handlePushClinicToRakuraku = async (clinic: Clinic) => {
-    const res = await fetch('/api/rakuraku/push-clinic', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        rakurakuClinicId: clinic.rakurakuClinicId,
-        name: clinic.name,
-        doctorName: clinic.doctorName,
-        zip: clinic.zip,
-        prefecture: clinic.prefecture,
-        city: clinic.city,
-        address: clinic.address,
-        building: clinic.building,
-        phone: clinic.phone,
-        email: clinic.email
-      })
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json.error || `楽楽販売への送信に失敗しました (HTTP ${res.status})`);
-    await updateDoc(doc(db, 'clinics', clinic.id), {
-      rakurakuClinicId: json.rakurakuClinicId,
-      rakurakuPending: false,
-      rakurakuSyncedAt: new Date().toISOString()
-    });
-    await logAuditAction('CLINIC_RAKURAKU_PUSH', clinic.id, clinic.rakurakuClinicId || 'None', json.rakurakuClinicId);
-    return json as { rakurakuClinicId: string; created: boolean };
-  };
-
   const handleDeleteClinic = async (id: string) => {
     const docRef = doc(db, 'clinics', id);
     await deleteDoc(docRef);
@@ -1655,7 +1626,6 @@ export default function App() {
               onDeleteAllClinics={handleDeleteAllClinics}
               onImportClinics={handleImportClinics}
               onRenumberClinics={handleRenumberClinics}
-              onPushClinicToRakuraku={handlePushClinicToRakuraku}
             />
           )}
 

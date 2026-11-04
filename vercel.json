@@ -1,5 +1,0 @@
-{
-  "crons": [
-    { "path": "/api/rakuraku/pull-clinics", "schedule": "0 21 * * *" }
-  ]
-}
