@@ -12,7 +12,8 @@ import {
   CheckCircle,
   FileSpreadsheet,
   Loader2,
-  Hash
+  Hash,
+  Send
 } from 'lucide-react';
 import { Clinic } from '../types';
 
@@ -24,6 +25,7 @@ interface ClinicMasterProps {
   onDeleteAllClinics?: () => Promise<void>;
   onImportClinics: (clinics: Omit<Clinic, 'id' | 'createdAt'>[], replaceAll?: boolean) => Promise<void>;
   onRenumberClinics?: () => Promise<void>;
+  onPushClinicToRakuraku?: (clinic: Clinic) => Promise<{ rakurakuClinicId: string; created: boolean }>;
 }
 
 export default function ClinicMaster({ 
@@ -33,7 +35,8 @@ export default function ClinicMaster({
   onDeleteClinic,
   onDeleteAllClinics,
   onImportClinics,
-  onRenumberClinics
+  onRenumberClinics,
+  onPushClinicToRakuraku
 }: ClinicMasterProps) {
   
   // States
@@ -47,6 +50,7 @@ export default function ClinicMaster({
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isRenumbering, setIsRenumbering] = useState(false);
+  const [pushingClinicId, setPushingClinicId] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [replaceAllMode, setReplaceAllMode] = useState(false);
   const [csvPreview, setCsvPreview] = useState<any[]>([]);
@@ -214,6 +218,29 @@ export default function ClinicMaster({
     setTimeout(() => {
       setNotification(prev => (prev?.text === text ? null : prev));
     }, 4000);
+  };
+
+  const handlePushToRakuraku = async (clinic: Clinic) => {
+    if (!onPushClinicToRakuraku) return;
+    const action = clinic.rakurakuClinicId
+      ? `楽楽販売のクリニックID ${clinic.rakurakuClinicId} を、この内容で更新します。`
+      : '楽楽販売の顧客マスタに新規登録します。';
+    if (!window.confirm(`「${clinic.name}」\n${action}よろしいですか？`)) return;
+    setPushingClinicId(clinic.id);
+    try {
+      const r = await onPushClinicToRakuraku(clinic);
+      showNotification(
+        r.created
+          ? `「${clinic.name}」を楽楽販売に登録しました（クリニックID ${r.rakurakuClinicId}）。`
+          : `「${clinic.name}」を楽楽販売に送信しました。`,
+        'success'
+      );
+    } catch (err: any) {
+      console.error(err);
+      showNotification(err?.message || '楽楽販売への送信中にエラーが発生しました。', 'error');
+    } finally {
+      setPushingClinicId(null);
+    }
   };
 
   const handleOpenDelete = (clinic: Clinic) => {
@@ -853,7 +880,7 @@ export default function ClinicMaster({
                 <th className="px-5 py-3">英語表記 / 英語住所</th>
                 <th className="px-5 py-3">連絡先</th>
                 <th className="px-5 py-3">ステータス</th>
-                <th className="px-5 py-3 text-right w-24">操作</th>
+                <th className="px-5 py-3 text-right w-32">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
@@ -899,9 +926,36 @@ export default function ClinicMaster({
                         }`}>
                           {c.active ? '有効' : '無効'}
                         </span>
+                        <div className="mt-1">
+                          {c.rakurakuPending ? (
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-100" title="画面で編集した内容を楽楽販売へまだ送っていません">
+                              楽楽 未送信
+                            </span>
+                          ) : c.rakurakuClinicId ? (
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-100" title={c.rakurakuSyncedAt ? `最終同期 ${c.rakurakuSyncedAt.slice(0, 16).replace('T', ' ')}` : undefined}>
+                              楽楽 {c.rakurakuClinicId}
+                            </span>
+                          ) : (
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200">
+                              楽楽 未連携
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-5 py-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          {onPushClinicToRakuraku && (
+                            <button
+                              type="button"
+                              onClick={() => handlePushToRakuraku(c)}
+                              disabled={pushingClinicId !== null}
+                              className="bg-white hover:bg-blue-50 text-blue-600 p-1.5 rounded border border-slate-200 hover:border-blue-200 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="楽楽販売へ送信"
+                              aria-label={`クリニック「${c.name || c.clinicId}」を楽楽販売へ送信`}
+                            >
+                              {pushingClinicId === c.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => handleOpenEdit(c)}
