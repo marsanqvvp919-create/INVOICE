@@ -98,6 +98,32 @@ function safeText(text: string | null | undefined): string {
 }
 
 /**
+ * Turn a mostly-English address into pure ASCII without throwing it away.
+ * e.g. "〒160-0022 10F, RS Building…" → "160-0022 10F, RS Building…"
+ *      "…Hiroshima 730-0032、Japan"   → "…Hiroshima 730-0032, Japan"
+ * Returns '' when nothing usable remains (empty or almost entirely Japanese).
+ */
+export function normalizeEnglishAddress(raw?: string | null): string {
+  if (!raw) return '';
+  // すでに半角英数字だけなら、手を加えずそのまま使う
+  if (!/[^\x00-\x7F]/.test(raw)) return raw.trim();
+  const ascii = raw
+    .normalize('NFKD') // 全角英数字・全角スペース・全角記号 → 半角、ō → o + 記号
+    .replace(/[̀-ͯ]/g, '') // ō・é などのアクセント記号だけ外す（Kakōzan → Kakozan）
+    .replace(/[、，]/g, ', ')
+    .replace(/[。．]/g, '. ')
+    .replace(/[－ー―‐]/g, '-')
+    .replace(/[^\x00-\x7F]/g, ' ') // 〒・館など残った日本語の文字を除去
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/(,\s*)+/g, ', ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[\s,]+|[\s,]+$/g, '');
+  // 英字がほとんど残らない（＝日本語で入力されている）場合は使わない
+  const letters = (ascii.match(/[A-Za-z]/g) || []).length;
+  return letters >= 3 ? ascii : '';
+}
+
+/**
  * Safely format clinic details into pure English for commercial invoices
  */
 export function getEnglishClinicDetails(consignee: Partial<Clinic> = {}) {
@@ -116,8 +142,10 @@ export function getEnglishClinicDetails(consignee: Partial<Clinic> = {}) {
   }
 
   // 2. Address in English
-  let addressEn = consignee.addressEn ? consignee.addressEn.trim() : '';
-  if (!addressEn || containsCJK(addressEn)) {
+  // 英語住所に「〒」「、」や全角英数字・全角スペースなどが少し混じっているだけで
+  // 住所全体を捨てないよう、半角に正規化し、残った日本語の文字だけを取り除く
+  let addressEn = normalizeEnglishAddress(consignee.addressEn);
+  if (!addressEn) {
     const rawAddr = (consignee.address || '') + (consignee.building || '');
     if (rawAddr.includes('港南2丁目') || rawAddr.includes('品川')) {
       addressEn = 'B-Block, Shinagawa Intercity, 2-15-2 Konan, Minato-ku, Tokyo, Japan';
